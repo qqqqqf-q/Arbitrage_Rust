@@ -1,0 +1,49 @@
+# rust_recode 快速开始
+
+## 1. 准备环境变量
+
+本项目不会在代码或文件中写入任何密钥，请通过环境变量提供：
+
+- `API_KEY`
+- `API_SECRET`
+- `TELEGRAM_BOT_TOKEN`
+- `AUTHORIZED_USER_ID`（可选；为 `0` 表示不限制）
+
+Windows（当前 PowerShell 会话）示例：
+
+```powershell
+$env:API_KEY="你的key"
+$env:API_SECRET="你的secret"
+$env:TELEGRAM_BOT_TOKEN="你的tg token"
+$env:AUTHORIZED_USER_ID="0"
+```
+
+也可以使用 `setup_api.bat`（只设置当前 cmd 会话变量）。
+
+## 2. 运行（release）
+
+在仓库根目录执行：
+
+```powershell
+cd rust_recode
+cargo run --release
+```
+
+## 3. Telegram 命令对齐
+
+支持与 `arbitrage_recode.py` 对齐的命令：
+
+- `/start` `/help` `/status` `/balance`
+- `/pause` `/resume`
+- `/trade on|off`（默认关闭，避免误交易）
+- `/set fee_rate|min_profit|depth 值`
+
+## 4. 最佳性能编译（可选）
+
+在你自己的机器上可以开启 CPU 指令集优化：
+
+```powershell
+$env:RUSTFLAGS="-C target-cpu=native"
+cargo build --release
+```
+

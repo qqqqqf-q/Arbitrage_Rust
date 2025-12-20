@@ -1,12 +1,90 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::arbitrage::graph::{EdgeKind, Graph};
 use crate::domain::{CycleInfo, Trade};
+
+#[derive(Default)]
+pub struct SpfaWorkspace {
+    dist: Vec<f64>,
+    pred: Vec<usize>,
+    enqueue_count: Vec<usize>,
+    in_queue: Vec<bool>,
+
+    queue: Vec<usize>,
+    queue_head: usize,
+    candidate_nodes: Vec<usize>,
+
+    found_signatures: HashSet<u64>,
+    node_in_cycle: Vec<bool>,
+
+    visited_stamp: Vec<u32>,
+    visited_pos: Vec<i32>,
+    stamp: u32,
+
+    path_rev: Vec<usize>,
+    cycle_node_indices: Vec<usize>,
+    signature_scratch: Vec<usize>,
+}
+
+impl SpfaWorkspace {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn prepare(&mut self, n: usize) {
+        self.dist.resize(n, 0.0);
+        self.dist.fill(0.0);
+
+        self.pred.resize(n, usize::MAX);
+        self.pred.fill(usize::MAX);
+
+        self.enqueue_count.resize(n, 0);
+        self.enqueue_count.fill(0);
+
+        self.in_queue.resize(n, false);
+        self.in_queue.fill(false);
+
+        self.node_in_cycle.resize(n, false);
+        self.node_in_cycle.fill(false);
+
+        self.visited_stamp.resize(n, 0);
+        self.visited_pos.resize(n, 0);
+
+        self.queue.clear();
+        self.queue_head = 0;
+        self.candidate_nodes.clear();
+        self.found_signatures.clear();
+        self.path_rev.clear();
+        self.cycle_node_indices.clear();
+        self.signature_scratch.clear();
+    }
+
+    fn next_stamp(&mut self) -> u32 {
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.stamp == 0 {
+            self.visited_stamp.fill(0);
+            self.stamp = 1;
+        }
+        self.stamp
+    }
+}
 
 pub fn find_negative_cycles_spfa(
     graph: &Graph,
     pair_names: &[String],
     max_depth: usize,
+) -> anyhow::Result<Vec<CycleInfo>> {
+    let mut ws = SpfaWorkspace::new();
+    find_negative_cycles_spfa_with_workspace(graph, pair_names, max_depth, &mut ws)
+}
+
+pub fn find_negative_cycles_spfa_with_workspace(
+    graph: &Graph,
+    pair_names: &[String],
+    max_depth: usize,
+    ws: &mut SpfaWorkspace,
 ) -> anyhow::Result<Vec<CycleInfo>> {
     if graph.nodes.is_empty() || graph.edges.is_empty() {
         return Ok(Vec::new());
@@ -18,128 +96,134 @@ pub fn find_negative_cycles_spfa(
     let n = graph.nodes.len();
     let m = graph.edges.len();
 
-    let mut dist = vec![0.0f64; n];
-    let mut pred = vec![usize::MAX; n];
-    let mut enqueue_count = vec![0usize; n];
-    let mut in_queue = vec![false; n];
-    let mut q = VecDeque::new();
+    ws.prepare(n);
 
     for i in 0..n {
-        q.push_back(i);
-        in_queue[i] = true;
-        enqueue_count[i] = 1;
+        ws.queue.push(i);
+        ws.in_queue[i] = true;
+        ws.enqueue_count[i] = 1;
     }
 
-    let mut relaxation_checks: u64 = 0;
     let iteration_limit: u64 = (n as u64) * (m as u64) * 2 + (n as u64);
     let mut loop_iters: u64 = 0;
-    let mut candidate_nodes: Vec<usize> = Vec::new();
 
-    while let Some(u) = q.pop_front() {
+    while ws.queue_head < ws.queue.len() {
         if loop_iters > iteration_limit {
             return Err(anyhow::anyhow!("SPFA 超过安全迭代上限"));
         }
         loop_iters += 1;
 
-        in_queue[u] = false;
+        let u = ws.queue[ws.queue_head];
+        ws.queue_head += 1;
+
+        ws.in_queue[u] = false;
+        let du = ws.dist[u];
+        if !du.is_finite() {
+            continue;
+        }
+
         for &edge_idx in &graph.adjacency[u] {
-            relaxation_checks += 1;
-            let e = &graph.edges[edge_idx];
-            let v = e.to;
+            let v = graph.edges[edge_idx].to;
             let w = graph.edge_weight(edge_idx);
-            if !w.is_finite() || !dist[u].is_finite() {
+            if !w.is_finite() {
                 continue;
             }
-            let nd = dist[u] + w;
-            if nd < dist[v] {
-                dist[v] = nd;
-                pred[v] = u;
-                if !in_queue[v] && enqueue_count[v] < n {
-                    q.push_back(v);
-                    in_queue[v] = true;
-                    enqueue_count[v] += 1;
-                    if enqueue_count[v] >= n {
-                        candidate_nodes.push(v);
+            let nd = du + w;
+            if nd < ws.dist[v] {
+                ws.dist[v] = nd;
+                ws.pred[v] = u;
+                if !ws.in_queue[v] && ws.enqueue_count[v] < n {
+                    ws.queue.push(v);
+                    ws.in_queue[v] = true;
+                    ws.enqueue_count[v] += 1;
+                    if ws.enqueue_count[v] >= n {
+                        ws.candidate_nodes.push(v);
                     }
                 }
             }
         }
     }
 
-    if candidate_nodes.is_empty() {
-        let _ = relaxation_checks;
+    if ws.candidate_nodes.is_empty() {
         return Ok(Vec::new());
     }
 
-    candidate_nodes.sort_unstable();
-    candidate_nodes.dedup();
+    ws.candidate_nodes.sort_unstable();
+    ws.candidate_nodes.dedup();
 
-    let mut found_signatures: HashSet<Vec<usize>> = HashSet::new();
-    let mut node_in_cycle = vec![false; n];
     let mut cycles = Vec::new();
 
-    for node_updated in candidate_nodes {
-        if node_in_cycle[node_updated] {
+    for i in 0..ws.candidate_nodes.len() {
+        let node_updated = ws.candidate_nodes[i];
+        if ws.node_in_cycle[node_updated] {
             continue;
         }
 
         let mut backtrack = node_updated;
         for _ in 0..n {
-            if backtrack == usize::MAX || pred[backtrack] == usize::MAX {
+            if backtrack == usize::MAX || ws.pred[backtrack] == usize::MAX {
                 backtrack = usize::MAX;
                 break;
             }
-            backtrack = pred[backtrack];
+            backtrack = ws.pred[backtrack];
         }
         if backtrack == usize::MAX {
             continue;
         }
 
-        let mut visited = vec![isize::MIN; n];
-        let mut path_rev: Vec<usize> = Vec::with_capacity(n);
+        let stamp = ws.next_stamp();
+        ws.path_rev.clear();
         let mut cur = backtrack;
-        let mut pos: isize = 0;
-        while cur != usize::MAX && visited[cur] == isize::MIN && (pos as usize) <= n + 1 {
-            visited[cur] = pos;
-            path_rev.push(cur);
+        let mut pos: i32 = 0;
+        while cur != usize::MAX && ws.visited_stamp[cur] != stamp && (pos as usize) <= n + 1 {
+            ws.visited_stamp[cur] = stamp;
+            ws.visited_pos[cur] = pos;
+            ws.path_rev.push(cur);
             pos += 1;
-            cur = pred[cur];
+            cur = ws.pred[cur];
         }
-        if cur == usize::MAX || visited[cur] == isize::MIN || (pos as usize) > n + 1 {
+        if cur == usize::MAX || ws.visited_stamp[cur] != stamp || (pos as usize) > n + 1 {
             continue;
         }
 
-        let start_pos = visited[cur] as usize;
-        if start_pos >= path_rev.len() {
+        let start_pos = ws.visited_pos[cur];
+        if start_pos < 0 {
+            continue;
+        }
+        let start_pos = start_pos as usize;
+        if start_pos >= ws.path_rev.len() {
             continue;
         }
 
-        let mut cycle_node_indices = path_rev[start_pos..].to_vec();
-        cycle_node_indices.reverse();
-        if cycle_node_indices.is_empty() {
+        ws.cycle_node_indices.clear();
+        ws.cycle_node_indices
+            .extend_from_slice(&ws.path_rev[start_pos..]);
+        ws.cycle_node_indices.reverse();
+        if ws.cycle_node_indices.is_empty() {
             continue;
         }
-        let first = cycle_node_indices[0];
-        cycle_node_indices.push(first);
+        let first = ws.cycle_node_indices[0];
+        ws.cycle_node_indices.push(first);
 
-        let depth = cycle_node_indices.len().saturating_sub(1);
+        let depth = ws.cycle_node_indices.len().saturating_sub(1);
         if depth == 0 || depth > max_depth {
             continue;
         }
 
-        let mut signature = cycle_node_indices[..depth].to_vec();
-        signature.sort_unstable();
-        if found_signatures.contains(&signature) {
+        ws.signature_scratch.clear();
+        ws.signature_scratch
+            .extend_from_slice(&ws.cycle_node_indices[..depth]);
+        ws.signature_scratch.sort_unstable();
+        let sig = signature_hash(&ws.signature_scratch);
+        if ws.found_signatures.contains(&sig) {
             continue;
         }
 
-        if let Some(cycle) =
-            reconstruct_cycle(graph, pair_names, &cycle_node_indices, depth)
-        {
-            found_signatures.insert(signature);
-            for &node_idx in cycle_node_indices.iter().take(depth) {
-                if node_idx < node_in_cycle.len() {
-                    node_in_cycle[node_idx] = true;
+        if let Some(cycle) = reconstruct_cycle(graph, pair_names, &ws.cycle_node_indices, depth) {
+            ws.found_signatures.insert(sig);
+            for &node_idx in ws.cycle_node_indices.iter().take(depth) {
+                if node_idx < ws.node_in_cycle.len() {
+                    ws.node_in_cycle[node_idx] = true;
                 }
             }
             cycles.push(cycle);
@@ -186,4 +270,10 @@ fn reconstruct_cycle(
         trades,
         depth,
     })
+}
+
+fn signature_hash(sorted_nodes: &[usize]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    sorted_nodes.hash(&mut hasher);
+    hasher.finish()
 }

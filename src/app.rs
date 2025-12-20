@@ -12,7 +12,9 @@ use tracing::{error, info, warn};
 
 use crate::arbitrage::graph::{Graph, build_static_graph};
 use crate::arbitrage::{
-    risk::assess_risk, simulate::simulate_full, spfa::find_negative_cycles_spfa,
+    risk::assess_risk,
+    simulate::simulate_full,
+    spfa::{SpfaWorkspace, find_negative_cycles_spfa_with_workspace},
 };
 use crate::binance::rest::BinanceRestClient;
 use crate::binance::ws::spawn_book_ticker_streams;
@@ -248,6 +250,7 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
     info!("Ticker 数据已稳定，主套利计算循环正式开始。");
 
     let mut last_processed_seq = 0u64;
+    let mut spfa_ws = SpfaWorkspace::new();
 
     loop {
         {
@@ -276,10 +279,11 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
         ctx.graph.maybe_rebuild_all_weights(&ctx.tickers);
 
         let bf_start = std::time::Instant::now();
-        let cycles = find_negative_cycles_spfa(
+        let cycles = find_negative_cycles_spfa_with_workspace(
             &ctx.graph,
             ctx.websocket_symbols.as_ref(),
             cfg_snapshot.max_arbitrage_depth,
+            &mut spfa_ws,
         )?;
         let bf_sec = bf_start.elapsed().as_secs_f64();
 

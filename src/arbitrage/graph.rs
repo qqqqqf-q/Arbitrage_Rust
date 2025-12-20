@@ -131,6 +131,9 @@ impl Graph {
     }
 
     pub fn maybe_rebuild_all_weights(&self, store: &TickerStore) {
+        if !self.rebuild_all.load(Ordering::Relaxed) {
+            return;
+        }
         if !self.rebuild_all.swap(false, Ordering::Relaxed) {
             return;
         }

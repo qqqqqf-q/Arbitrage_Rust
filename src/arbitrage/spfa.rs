@@ -135,7 +135,9 @@ pub fn find_negative_cycles_spfa(
             continue;
         }
 
-        if let Some(cycle) = reconstruct_cycle(graph, pair_names, &edge_lookup, &cycle_node_indices, depth) {
+        if let Some(cycle) =
+            reconstruct_cycle(graph, pair_names, &edge_lookup, &cycle_node_indices, depth)
+        {
             found_signatures.insert(signature);
             for &node_idx in cycle_node_indices.iter().take(depth) {
                 if node_idx < node_in_cycle.len() {
@@ -190,5 +192,9 @@ fn reconstruct_cycle(
         });
     }
 
-    Some(CycleInfo { nodes, trades, depth })
+    Some(CycleInfo {
+        nodes,
+        trades,
+        depth,
+    })
 }

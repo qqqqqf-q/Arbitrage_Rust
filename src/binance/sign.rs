@@ -10,4 +10,3 @@ pub fn sign_query(secret: &str, query: &str) -> anyhow::Result<String> {
     let signature = mac.finalize().into_bytes();
     Ok(hex::encode(signature))
 }
-

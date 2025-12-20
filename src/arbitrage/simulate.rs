@@ -66,7 +66,13 @@ pub fn simulate_full(
     }
 
     if !skip_initial_swap_and_first_step && sim_current_currency != *cycle_start_currency {
-        let swap = simulate_swap(&sim_current_currency, cycle_start_currency, sim_current_amount, tickers, fee_rate);
+        let swap = simulate_swap(
+            &sim_current_currency,
+            cycle_start_currency,
+            sim_current_amount,
+            tickers,
+            fee_rate,
+        );
         if swap.estimated_to_amount > 1e-12 {
             sim_current_amount = swap.estimated_to_amount;
             sim_current_currency = cycle_start_currency.clone();
@@ -77,7 +83,10 @@ pub fn simulate_full(
                 profit_amount: 0.0,
                 final_amount: 0.0,
                 final_currency: sim_current_currency,
-                reason: format!("模拟初始闪兑 ({} -> {}) 失败或无路径", actual_start_currency, cycle_start_currency),
+                reason: format!(
+                    "模拟初始闪兑 ({} -> {}) 失败或无路径",
+                    actual_start_currency, cycle_start_currency
+                ),
             });
         }
     }
@@ -122,14 +131,24 @@ pub fn simulate_full(
     }
 
     if end_with_usdt && sim_current_currency != "USDT" {
-        let swap = simulate_swap(&sim_current_currency, "USDT", sim_current_amount, tickers, fee_rate);
+        let swap = simulate_swap(
+            &sim_current_currency,
+            "USDT",
+            sim_current_amount,
+            tickers,
+            fee_rate,
+        );
         if swap.estimated_to_amount > 1e-12 {
             sim_current_amount = swap.estimated_to_amount;
             sim_current_currency = "USDT".to_string();
         }
     }
 
-    let profit_target_currency = if end_with_usdt { "USDT" } else { actual_start_currency };
+    let profit_target_currency = if end_with_usdt {
+        "USDT"
+    } else {
+        actual_start_currency
+    };
     let profit_amount: f64;
     let profit_percent: f64;
     let final_amount = sim_current_amount;
@@ -232,11 +251,15 @@ fn simulate_swap(
         let sym_from_int = format!("{}/{}", from_currency, intermediate_currency);
         let sym_to_int = format!("{}/{}", to_currency, intermediate_currency);
 
-        if let (Some(from_t), Some(to_t)) = (tickers.get_by_pair(&sym_from_int), tickers.get_by_pair(&sym_to_int)) {
+        if let (Some(from_t), Some(to_t)) = (
+            tickers.get_by_pair(&sym_from_int),
+            tickers.get_by_pair(&sym_to_int),
+        ) {
             if from_t.bid > 0.0 && to_t.ask > 0.0 {
                 let intermediate_amount_net = (from_amount * from_t.bid) * (1.0 - fee_rate);
                 if intermediate_amount_net > 1e-12 {
-                    out.estimated_to_amount = (intermediate_amount_net / to_t.ask) * (1.0 - fee_rate);
+                    out.estimated_to_amount =
+                        (intermediate_amount_net / to_t.ask) * (1.0 - fee_rate);
                     out.method = Some("intermediate");
                 }
             }

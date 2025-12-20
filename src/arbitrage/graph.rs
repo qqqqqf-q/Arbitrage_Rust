@@ -118,7 +118,8 @@ pub fn build_static_graph(
 impl Graph {
     pub fn set_fee_rate(&self, taker_fee_rate: Decimal) -> anyhow::Result<()> {
         let fee_multiplier = fee_multiplier_from_fee(taker_fee_rate)?;
-        self.fee_multiplier_bits.store(fee_multiplier.to_bits(), Ordering::Relaxed);
+        self.fee_multiplier_bits
+            .store(fee_multiplier.to_bits(), Ordering::Relaxed);
         self.rebuild_all.store(true, Ordering::Relaxed);
         Ok(())
     }

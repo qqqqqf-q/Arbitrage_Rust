@@ -1,14 +1,14 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context as _;
 use futures_util::StreamExt;
 use rust_decimal::Decimal;
+use simd_json::prelude::{ValueAsObject, ValueAsScalar, ValueObjectAccess};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
-use simd_json::prelude::{ValueAsObject, ValueAsScalar, ValueObjectAccess};
 
 use crate::arbitrage::graph::Graph;
 use crate::binance::models::{ExchangeInfo, SymbolFilter};
@@ -17,7 +17,9 @@ use crate::config::Config;
 use crate::domain::Market;
 use crate::store::TickerStore;
 
-pub async fn load_spot_markets(rest: &BinanceRestClient) -> anyhow::Result<HashMap<String, Market>> {
+pub async fn load_spot_markets(
+    rest: &BinanceRestClient,
+) -> anyhow::Result<HashMap<String, Market>> {
     let ExchangeInfo { symbols } = rest.exchange_info().await?;
     let mut out = HashMap::with_capacity(symbols.len());
 
@@ -138,7 +140,16 @@ pub fn spawn_book_ticker_streams(
                 .filter_map(|p| pair_to_stream.get(&p).cloned())
                 .collect();
             tokio::spawn(async move {
-                run_ws_chunk(idx, streams, store, graph, ticker_notify, conn_ok, binance_to_id).await;
+                run_ws_chunk(
+                    idx,
+                    streams,
+                    store,
+                    graph,
+                    ticker_notify,
+                    conn_ok,
+                    binance_to_id,
+                )
+                .await;
             })
         })
         .collect();
@@ -155,7 +166,11 @@ async fn run_ws_chunk(
     conn_ok: Arc<Vec<AtomicBool>>,
     binance_to_id: Arc<HashMap<String, usize>>,
 ) {
-    info!("启动 WebSocket 块 {} (监听 {} 个交易对)...", chunk_index + 1, streams.len());
+    info!(
+        "启动 WebSocket 块 {} (监听 {} 个交易对)...",
+        chunk_index + 1,
+        streams.len()
+    );
     conn_ok[chunk_index].store(false, Ordering::Relaxed);
 
     let url = format!(
@@ -173,12 +188,24 @@ async fn run_ws_chunk(
                 while let Some(msg) = reader.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
-                            if let Err(e) = handle_ws_message(text.into_bytes(), &store, &graph, &ticker_notify, &binance_to_id) {
+                            if let Err(e) = handle_ws_message(
+                                text.into_bytes(),
+                                &store,
+                                &graph,
+                                &ticker_notify,
+                                &binance_to_id,
+                            ) {
                                 warn!("块 {}: 解析消息失败: {}", chunk_index + 1, e);
                             }
                         }
                         Ok(Message::Binary(bin)) => {
-                            if let Err(e) = handle_ws_message(bin, &store, &graph, &ticker_notify, &binance_to_id) {
+                            if let Err(e) = handle_ws_message(
+                                bin,
+                                &store,
+                                &graph,
+                                &ticker_notify,
+                                &binance_to_id,
+                            ) {
                                 warn!("块 {}: 解析消息失败: {}", chunk_index + 1, e);
                             }
                         }
@@ -216,10 +243,7 @@ fn handle_ws_message(
         .and_then(|d| d.as_object())
         .context("缺少 data")?;
 
-    let sym = data
-        .get("s")
-        .and_then(|s| s.as_str())
-        .context("缺少 s")?;
+    let sym = data.get("s").and_then(|s| s.as_str()).context("缺少 s")?;
     let bid = data
         .get("b")
         .and_then(|s| s.as_str())

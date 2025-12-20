@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct Market {
-    pub symbol: String, // 形如 "BTC/USDT"
+    pub symbol: String,         // 形如 "BTC/USDT"
     pub binance_symbol: String, // 形如 "BTCUSDT"
     pub base: String,
     pub quote: String,
@@ -40,4 +40,3 @@ pub struct CycleInfo {
     pub trades: Vec<Trade>,
     pub depth: usize,
 }
-

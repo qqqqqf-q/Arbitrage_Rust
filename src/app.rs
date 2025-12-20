@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
@@ -10,8 +10,10 @@ use teloxide::prelude::{Bot, ChatId, Requester};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info, warn};
 
-use crate::arbitrage::graph::{build_static_graph, Graph};
-use crate::arbitrage::{risk::assess_risk, simulate::simulate_full, spfa::find_negative_cycles_spfa};
+use crate::arbitrage::graph::{Graph, build_static_graph};
+use crate::arbitrage::{
+    risk::assess_risk, simulate::simulate_full, spfa::find_negative_cycles_spfa,
+};
 use crate::binance::rest::BinanceRestClient;
 use crate::binance::ws::spawn_book_ticker_streams;
 use crate::config::{Config, Credentials};
@@ -59,7 +61,9 @@ pub struct BalanceStore {
 
 impl BalanceStore {
     pub fn new() -> Self {
-        Self { map: DashMap::new() }
+        Self {
+            map: DashMap::new(),
+        }
     }
 
     pub fn set_all(&self, balances: HashMap<String, Decimal>) {
@@ -78,7 +82,10 @@ impl BalanceStore {
     }
 
     pub fn get(&self, currency: &str) -> Decimal {
-        self.map.get(currency).map(|v| *v.value()).unwrap_or(Decimal::ZERO)
+        self.map
+            .get(currency)
+            .map(|v| *v.value())
+            .unwrap_or(Decimal::ZERO)
     }
 }
 
@@ -108,14 +115,22 @@ pub async fn run() -> anyhow::Result<()> {
     info!("已加载 {} 个现货市场。", markets.len());
 
     info!("分批获取 24h Ticker，进行流动性过滤...");
-    let websocket_symbols = crate::binance::ws::filter_symbols_by_quote_volume(&rest, &markets, cfg.clone()).await?;
+    let websocket_symbols =
+        crate::binance::ws::filter_symbols_by_quote_volume(&rest, &markets, cfg.clone()).await?;
     if websocket_symbols.is_empty() {
         anyhow::bail!("流动性过滤后无可用交易对，程序退出。");
     }
-    info!("流动性过滤完成，将监听 {} 个交易对。", websocket_symbols.len());
+    info!(
+        "流动性过滤完成，将监听 {} 个交易对。",
+        websocket_symbols.len()
+    );
 
     let tickers = Arc::new(TickerStore::new(websocket_symbols.clone()));
-    let graph = Arc::new(build_static_graph(&markets, &websocket_symbols, cfg.read().await.taker_fee_rate)?);
+    let graph = Arc::new(build_static_graph(
+        &markets,
+        &websocket_symbols,
+        cfg.read().await.taker_fee_rate,
+    )?);
     let balances = Arc::new(BalanceStore::new());
     let perf = Arc::new(Mutex::new(PerfStats {
         start_epoch_ms: now_ms(),
@@ -124,8 +139,14 @@ pub async fn run() -> anyhow::Result<()> {
 
     let ws_chunk_size = cfg.read().await.websocket_chunk_size;
     let ticker_notify = Arc::new(tokio::sync::Notify::new());
-    let (ws_tasks, ws_conn_ok) =
-        spawn_book_ticker_streams(websocket_symbols.clone(), markets.clone(), tickers.clone(), graph.clone(), ticker_notify.clone(), ws_chunk_size);
+    let (ws_tasks, ws_conn_ok) = spawn_book_ticker_streams(
+        websocket_symbols.clone(),
+        markets.clone(),
+        tickers.clone(),
+        graph.clone(),
+        ticker_notify.clone(),
+        ws_chunk_size,
+    );
 
     let bot = Bot::new(creds.telegram_bot_token.as_str());
     let user_chat_id = Arc::new(Mutex::new(None));
@@ -171,7 +192,10 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_balance_task(rest: BinanceRestClient, ctx: Arc<AppContext>) -> tokio::task::JoinHandle<()> {
+fn spawn_balance_task(
+    rest: BinanceRestClient,
+    ctx: Arc<AppContext>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let interval = {
@@ -199,7 +223,10 @@ async fn update_balance_once(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
     Ok(())
 }
 
-fn spawn_arbitrage_loop(rest: BinanceRestClient, ctx: Arc<AppContext>) -> tokio::task::JoinHandle<()> {
+fn spawn_arbitrage_loop(
+    rest: BinanceRestClient,
+    ctx: Arc<AppContext>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = main_arbitrage_loop(&rest, &ctx).await {
             error!("主套利循环异常退出: {e:?}");
@@ -238,7 +265,8 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
 
         let seq = ctx.tickers.update_seq();
         if seq == 0 || seq == last_processed_seq {
-            let _ = tokio::time::timeout(Duration::from_millis(250), ctx.ticker_notify.notified()).await;
+            let _ = tokio::time::timeout(Duration::from_millis(250), ctx.ticker_notify.notified())
+                .await;
             continue;
         }
         last_processed_seq = seq;
@@ -248,7 +276,11 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
         ctx.graph.maybe_rebuild_all_weights(&ctx.tickers);
 
         let bf_start = std::time::Instant::now();
-        let cycles = find_negative_cycles_spfa(&ctx.graph, ctx.websocket_symbols.as_ref(), cfg_snapshot.max_arbitrage_depth)?;
+        let cycles = find_negative_cycles_spfa(
+            &ctx.graph,
+            ctx.websocket_symbols.as_ref(),
+            cfg_snapshot.max_arbitrage_depth,
+        )?;
         let bf_sec = bf_start.elapsed().as_secs_f64();
 
         let verify_start = std::time::Instant::now();
@@ -266,7 +298,10 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
 
                 if sim.verified {
                     let path_str = cycle.nodes.join(" -> ");
-                    info!("模拟验证成功: {} (模拟利润: {:.4}%)", path_str, sim.profit_percent);
+                    info!(
+                        "模拟验证成功: {} (模拟利润: {:.4}%)",
+                        path_str, sim.profit_percent
+                    );
 
                     if cfg_snapshot.auto_trade_enabled {
                         let permit = match ctx.trade_semaphore.clone().try_acquire_owned() {
@@ -299,13 +334,19 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
                             let cycle_clone = cycle.clone();
                             tokio::spawn(async move {
                                 let _permit = permit;
-                                if let Err(e) = execute_arbitrage_path(&rest, &ctx_clone, &cycle_clone).await {
+                                if let Err(e) =
+                                    execute_arbitrage_path(&rest, &ctx_clone, &cycle_clone).await
+                                {
                                     notify_text(&*ctx_clone, format!("套利执行失败: {}", e)).await;
                                 }
                             });
                             break;
                         } else {
-                            warn!("风险评估未通过: {}。原因: {}", path_str, risk.reasons.join("; "));
+                            warn!(
+                                "风险评估未通过: {}。原因: {}",
+                                path_str,
+                                risk.reasons.join("; ")
+                            );
                         }
                     }
                 }
@@ -398,9 +439,7 @@ async fn execute_arbitrage_path(
     if start_balance < min_start_usd {
         let msg = format!(
             "起始资金 {} 余额 ({}) 不足最低要求 (${})。",
-            start_fund_currency,
-            start_balance,
-            min_start_usd
+            start_fund_currency, start_balance, min_start_usd
         );
         notify_text(ctx, format!("套利中止: {}", msg)).await;
         anyhow::bail!(msg);
@@ -416,7 +455,8 @@ async fn execute_arbitrage_path(
         .unwrap_or_else(|| "USDT".to_string());
 
     if current_currency != cycle_start {
-        let res = execute_real_swap(rest, ctx, &current_currency, &cycle_start, current_amount).await?;
+        let res =
+            execute_real_swap(rest, ctx, &current_currency, &cycle_start, current_amount).await?;
         current_amount = res.received_amount;
         current_currency = res.received_currency;
     }
@@ -437,15 +477,19 @@ async fn execute_arbitrage_path(
             .map(|t| if trade.kind == "BUY" { t.ask } else { t.bid });
 
         let order = if trade.kind == "BUY" && cfg.use_quote_order_qty_for_buy {
-            place_market_order_with_retry(rest, market, "BUY", None, Some(current_amount), &cfg).await?
+            place_market_order_with_retry(rest, market, "BUY", None, Some(current_amount), &cfg)
+                .await?
         } else if trade.kind == "BUY" {
             let qty = match expected_price {
-                Some(p) if p > 0.0 => current_amount / Decimal::from_f64_retain(p).unwrap_or(Decimal::ZERO),
+                Some(p) if p > 0.0 => {
+                    current_amount / Decimal::from_f64_retain(p).unwrap_or(Decimal::ZERO)
+                }
                 _ => anyhow::bail!("缺少预期价格，无法计算 BUY 数量"),
             };
             place_market_order_with_retry(rest, market, "BUY", Some(qty), None, &cfg).await?
         } else {
-            place_market_order_with_retry(rest, market, "SELL", Some(current_amount), None, &cfg).await?
+            place_market_order_with_retry(rest, market, "SELL", Some(current_amount), None, &cfg)
+                .await?
         };
 
         current_amount = order.received_amount;
@@ -516,10 +560,20 @@ async fn execute_real_swap(
     if let Some(market) = ctx.markets.get(&symbol_buy) {
         let expected_price = ctx.tickers.get_by_pair(&symbol_buy).map(|t| t.ask);
         if cfg.use_quote_order_qty_for_buy {
-            return place_market_order_with_retry(rest, market, "BUY", None, Some(from_amount), &cfg).await;
+            return place_market_order_with_retry(
+                rest,
+                market,
+                "BUY",
+                None,
+                Some(from_amount),
+                &cfg,
+            )
+            .await;
         }
         let qty = match expected_price {
-            Some(p) if p > 0.0 => from_amount / Decimal::from_f64_retain(p).unwrap_or(Decimal::ZERO),
+            Some(p) if p > 0.0 => {
+                from_amount / Decimal::from_f64_retain(p).unwrap_or(Decimal::ZERO)
+            }
             _ => anyhow::bail!("缺少预期价格，无法计算 BUY 数量"),
         };
         return place_market_order_with_retry(rest, market, "BUY", Some(qty), None, &cfg).await;
@@ -527,10 +581,15 @@ async fn execute_real_swap(
 
     let symbol_sell = format!("{}/{}", from_currency, to_currency);
     if let Some(market) = ctx.markets.get(&symbol_sell) {
-        return place_market_order_with_retry(rest, market, "SELL", Some(from_amount), None, &cfg).await;
+        return place_market_order_with_retry(rest, market, "SELL", Some(from_amount), None, &cfg)
+            .await;
     }
 
-    anyhow::bail!("无法找到合适的交易对转换 {} -> {}", from_currency, to_currency)
+    anyhow::bail!(
+        "无法找到合适的交易对转换 {} -> {}",
+        from_currency,
+        to_currency
+    )
 }
 
 async fn place_market_order_with_retry(
@@ -550,9 +609,22 @@ async fn place_market_order_with_retry(
             .await
         {
             Ok(order) => {
-                let executed_qty = order.executed_qty.parse::<Decimal>().unwrap_or(Decimal::ZERO);
-                let quote_qty = order.cummulative_quote_qty.parse::<Decimal>().unwrap_or(Decimal::ZERO);
-                let received_fee = sum_commission_in_asset(&order, if side == "BUY" { &market.base } else { &market.quote });
+                let executed_qty = order
+                    .executed_qty
+                    .parse::<Decimal>()
+                    .unwrap_or(Decimal::ZERO);
+                let quote_qty = order
+                    .cummulative_quote_qty
+                    .parse::<Decimal>()
+                    .unwrap_or(Decimal::ZERO);
+                let received_fee = sum_commission_in_asset(
+                    &order,
+                    if side == "BUY" {
+                        &market.base
+                    } else {
+                        &market.quote
+                    },
+                );
                 let res = if side == "BUY" {
                     OrderExecResult {
                         side: side.to_string(),
@@ -586,7 +658,9 @@ async fn place_market_order_with_retry(
 }
 
 fn sum_commission_in_asset(order: &crate::binance::models::OrderResponse, asset: &str) -> Decimal {
-    let Some(fills) = &order.fills else { return Decimal::ZERO };
+    let Some(fills) = &order.fills else {
+        return Decimal::ZERO;
+    };
 
     let mut sum = Decimal::ZERO;
     for f in fills {

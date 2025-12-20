@@ -5,9 +5,7 @@ use rust_decimal::Decimal;
 use serde::de::DeserializeOwned;
 use urlencoding::encode;
 
-use crate::binance::models::{
-    AccountInfo, DepthResponse, ExchangeInfo, OrderResponse, Ticker24h,
-};
+use crate::binance::models::{AccountInfo, DepthResponse, ExchangeInfo, OrderResponse, Ticker24h};
 use crate::binance::sign::sign_query;
 
 #[derive(Clone)]
@@ -120,4 +118,3 @@ impl BinanceRestClient {
         &self.api_key
     }
 }
-

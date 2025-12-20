@@ -1,6 +1,6 @@
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use rust_decimal::Decimal;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use teloxide::dispatching::UpdateFilterExt;
 use teloxide::payloads::SendMessageSetters;
 use teloxide::prelude::*;
@@ -9,6 +9,29 @@ use teloxide::types::{MaybeInaccessibleMessage, User};
 use tracing::{info, warn};
 
 use crate::app::AppContext;
+
+fn format_duration_high_precision(sec: f64) -> String {
+    let sec = if sec.is_finite() && sec > 0.0 {
+        sec
+    } else {
+        0.0
+    };
+    let ns = (sec * 1_000_000_000.0).round();
+    if !ns.is_finite() || ns <= 0.0 {
+        return "0 ns".to_string();
+    }
+
+    let ns_u128 = ns as u128;
+    if ns_u128 >= 1_000_000_000 {
+        format!("{:.3} s", sec)
+    } else if ns_u128 >= 1_000_000 {
+        format!("{:.3} ms", (ns_u128 as f64) / 1_000_000.0)
+    } else if ns_u128 >= 1_000 {
+        format!("{:.3} µs", (ns_u128 as f64) / 1_000.0)
+    } else {
+        format!("{} ns", ns_u128)
+    }
+}
 
 fn disable_link_preview() -> LinkPreviewOptions {
     LinkPreviewOptions {
@@ -39,7 +62,10 @@ impl TelegramController {
     pub async fn run(self) {
         let me = self.bot.get_me().await;
         match me {
-            Ok(m) => info!("Telegram bot 已启动: @{}", m.user.username.unwrap_or_default()),
+            Ok(m) => info!(
+                "Telegram bot 已启动: @{}",
+                m.user.username.unwrap_or_default()
+            ),
             Err(e) => warn!("Telegram bot 初始化失败: {}", e),
         }
 
@@ -50,10 +76,11 @@ impl TelegramController {
         });
 
         let controller = self.clone();
-        let cb_handler = Update::filter_callback_query().endpoint(move |bot: Bot, q: CallbackQuery| {
-            let controller = controller.clone();
-            async move { controller.handle_callback(bot, q).await }
-        });
+        let cb_handler =
+            Update::filter_callback_query().endpoint(move |bot: Bot, q: CallbackQuery| {
+                let controller = controller.clone();
+                async move { controller.handle_callback(bot, q).await }
+            });
 
         let root = dptree::entry().branch(handler).branch(cb_handler);
 
@@ -65,9 +92,12 @@ impl TelegramController {
     }
 
     async fn handle_message(&self, bot: Bot, msg: Message) -> ResponseResult<()> {
-        let Some(text) = msg.text() else { return Ok(()) };
+        let Some(text) = msg.text() else {
+            return Ok(());
+        };
         if !self.is_authorized(msg.from.as_ref()) {
-            bot.send_message(msg.chat.id, "抱歉，您无权使用此机器人。").await?;
+            bot.send_message(msg.chat.id, "抱歉，您无权使用此机器人。")
+                .await?;
             return Ok(());
         }
 
@@ -113,7 +143,9 @@ impl TelegramController {
         }
         bot.answer_callback_query(q.id.clone()).await?;
 
-        let Some(data) = q.data.clone() else { return Ok(()) };
+        let Some(data) = q.data.clone() else {
+            return Ok(());
+        };
         if data == "confirm_trade_on" {
             {
                 let mut cfg = self.ctx.cfg.write().await;
@@ -121,9 +153,13 @@ impl TelegramController {
             }
             info!("用户已确认，自动交易已启用。");
             if let Some(MaybeInaccessibleMessage::Regular(msg)) = q.message {
-                bot.edit_message_text(msg.chat.id, msg.id, "自动交易已确认启用。\n<b>请密切监控!</b>")
-                    .parse_mode(ParseMode::Html)
-                    .await?;
+                bot.edit_message_text(
+                    msg.chat.id,
+                    msg.id,
+                    "自动交易已确认启用。\n<b>请密切监控!</b>",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
             }
         }
         Ok(())
@@ -153,8 +189,7 @@ impl TelegramController {
                 .unwrap_or_else(|| "用户".to_string()),
             if auto_trade { "已启用" } else { "已禁用" }
         );
-        bot
-            .send_message(msg.chat.id, welcome)
+        bot.send_message(msg.chat.id, welcome)
             .parse_mode(ParseMode::Html)
             .link_preview_options(disable_link_preview())
             .await?;
@@ -179,8 +214,7 @@ impl TelegramController {
             "  - <code>depth [整数]</code> (例如 5)\n",
         );
 
-        bot
-            .send_message(msg.chat.id, help_text)
+        bot.send_message(msg.chat.id, help_text)
             .parse_mode(ParseMode::Html)
             .link_preview_options(disable_link_preview())
             .await?;
@@ -228,15 +262,19 @@ impl TelegramController {
                 "  账户余额: 持有 {} 种资产\n",
                 "<b>性能统计:</b>\n",
                 "  循环速率: {:.2} 周期/秒\n",
-                "  上次计算耗时: {:.1} ms\n",
-                "    - 快照: {:.1}ms, 图构建: {:.1}ms\n",
-                "    - BF: {:.1}ms, 验证: {:.1}ms\n",
+                "  上次计算耗时: {}\n",
+                "    - 快照: {}, 图构建: {}\n",
+                "    - BF: {}, 验证: {}\n",
                 "<b>Rust 核心:</b>\n",
                 "  图构建: 已启用\n",
                 "  SPFA: 已启用\n",
                 "  风控/模拟: 已启用\n",
             ),
-            if cfg.running { "运行中" } else { "已暂停" },
+            if cfg.running {
+                "运行中"
+            } else {
+                "已暂停"
+            },
             if cfg.auto_trade_enabled {
                 "<b>已启用</b>"
             } else {
@@ -248,11 +286,11 @@ impl TelegramController {
             last_update_ago,
             self.ctx.balances.snapshot_sorted().len(),
             cps,
-            perf.last_cycle_duration_sec * 1000.0,
-            perf.snap_copy_duration_sec * 1000.0,
-            perf.graph_build_duration_sec * 1000.0,
-            perf.bf_call_duration_sec * 1000.0,
-            perf.verification_duration_sec * 1000.0,
+            format_duration_high_precision(perf.last_cycle_duration_sec),
+            format_duration_high_precision(perf.snap_copy_duration_sec),
+            format_duration_high_precision(perf.graph_build_duration_sec),
+            format_duration_high_precision(perf.bf_call_duration_sec),
+            format_duration_high_precision(perf.verification_duration_sec),
         );
 
         bot.send_message(msg.chat.id, status_text)
@@ -264,7 +302,8 @@ impl TelegramController {
     async fn on_set(&self, bot: &Bot, msg: &Message, text: &str) -> ResponseResult<()> {
         let parts: Vec<&str> = text.split_whitespace().collect();
         if parts.len() != 3 {
-            bot.send_message(msg.chat.id, "用法: /set [参数名] [值]").await?;
+            bot.send_message(msg.chat.id, "用法: /set [参数名] [值]")
+                .await?;
             return Ok(());
         }
 
@@ -282,35 +321,41 @@ impl TelegramController {
                     }
                 }
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("无效值格式: {}", e)).await?;
+                    bot.send_message(msg.chat.id, format!("无效值格式: {}", e))
+                        .await?;
                     return Ok(());
                 }
             },
             "min_profit" => match value_str.parse::<Decimal>() {
                 Ok(v) => cfg.set_min_profit(v),
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("无效值格式: {}", e)).await?;
+                    bot.send_message(msg.chat.id, format!("无效值格式: {}", e))
+                        .await?;
                     return Ok(());
                 }
             },
             "depth" => match value_str.parse::<usize>() {
                 Ok(v) => cfg.set_max_depth(v),
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("无效值格式: {}", e)).await?;
+                    bot.send_message(msg.chat.id, format!("无效值格式: {}", e))
+                        .await?;
                     return Ok(());
                 }
             },
             _ => {
-                bot.send_message(msg.chat.id, format!("未知参数: {}", param)).await?;
+                bot.send_message(msg.chat.id, format!("未知参数: {}", param))
+                    .await?;
                 return Ok(());
             }
         }
 
         info!("配置更新 via TG: {} -> {}", param, value_str);
-        bot
-            .send_message(msg.chat.id, format!("参数 `{}` 已更新为 `{}`", param, value_str))
-            .parse_mode(ParseMode::Html)
-            .await?;
+        bot.send_message(
+            msg.chat.id,
+            format!("参数 `{}` 已更新为 `{}`", param, value_str),
+        )
+        .parse_mode(ParseMode::Html)
+        .await?;
         Ok(())
     }
 
@@ -322,22 +367,25 @@ impl TelegramController {
             } else {
                 "已禁用"
             };
-            bot
-                .send_message(
-                    msg.chat.id,
-                    format!("当前自动交易状态: {}\n使用 `/trade on` 或 `/trade off` 切换。", status),
-                )
-                .parse_mode(ParseMode::Html)
-                .await?;
+            bot.send_message(
+                msg.chat.id,
+                format!(
+                    "当前自动交易状态: {}\n使用 `/trade on` 或 `/trade off` 切换。",
+                    status
+                ),
+            )
+            .parse_mode(ParseMode::Html)
+            .await?;
             return Ok(());
         }
 
         match parts[1].to_lowercase().as_str() {
             "on" => {
-                let keyboard = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-                    "确认启用自动交易",
-                    "confirm_trade_on",
-                )]]);
+                let keyboard =
+                    InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+                        "确认启用自动交易",
+                        "confirm_trade_on",
+                    )]]);
                 bot
                     .send_message(
                         msg.chat.id,
@@ -356,8 +404,7 @@ impl TelegramController {
                 bot.send_message(msg.chat.id, "自动交易已禁用。").await?;
             }
             _ => {
-                bot
-                    .send_message(msg.chat.id, "用法: `/trade on` 或 `/trade off`")
+                bot.send_message(msg.chat.id, "用法: `/trade on` 或 `/trade off`")
                     .parse_mode(ParseMode::Html)
                     .await?;
             }
@@ -371,7 +418,8 @@ impl TelegramController {
             cfg.running = false;
         }
         info!("套利计算已暂停。");
-        bot.send_message(msg.chat.id, "套利计算循环已暂停。").await?;
+        bot.send_message(msg.chat.id, "套利计算循环已暂停。")
+            .await?;
         Ok(())
     }
 
@@ -381,7 +429,8 @@ impl TelegramController {
             cfg.running = true;
         }
         info!("套利计算已恢复。");
-        bot.send_message(msg.chat.id, "套利计算循环已恢复。").await?;
+        bot.send_message(msg.chat.id, "套利计算循环已恢复。")
+            .await?;
         Ok(())
     }
 
@@ -398,8 +447,7 @@ impl TelegramController {
         }
         text.push_str("</pre>");
 
-        bot
-            .send_message(msg.chat.id, text)
+        bot.send_message(msg.chat.id, text)
             .parse_mode(ParseMode::Html)
             .link_preview_options(disable_link_preview())
             .await?;

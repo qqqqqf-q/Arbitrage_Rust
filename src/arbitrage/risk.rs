@@ -89,14 +89,19 @@ pub async fn assess_risk(
         .to_f64()
         .ok_or_else(|| anyhow::anyhow!("start_amount 无法转换为 f64"))?;
 
-    let start_value_usd_est = estimate_value_usd(&current_currency, intermediate_amount, tickers, &stablecoin_prefs)
-        .unwrap_or_else(|| {
-            if current_currency == "USDT" {
-                intermediate_amount
-            } else {
-                0.0
-            }
-        });
+    let start_value_usd_est = estimate_value_usd(
+        &current_currency,
+        intermediate_amount,
+        tickers,
+        &stablecoin_prefs,
+    )
+    .unwrap_or_else(|| {
+        if current_currency == "USDT" {
+            intermediate_amount
+        } else {
+            0.0
+        }
+    });
 
     let order_books = fetch_order_books_for_cycle(rest, cycle, markets, cfg).await?;
 
@@ -119,7 +124,11 @@ pub async fn assess_risk(
         };
 
         if intermediate_amount <= 0.0 {
-            let msg = format!("步骤 {}: 上一步金额无效 ({})", step_num, format_f64(intermediate_amount, 8));
+            let msg = format!(
+                "步骤 {}: 上一步金额无效 ({})",
+                step_num,
+                format_f64(intermediate_amount, 8)
+            );
             reasons.push(msg.clone());
             step.message = msg;
             details.push(step);
@@ -127,7 +136,10 @@ pub async fn assess_risk(
             break;
         }
         if current_currency != trade.from {
-            let msg = format!("逻辑错误：步骤 {} 需发 {}, 持有 {}", step_num, trade.from, current_currency);
+            let msg = format!(
+                "逻辑错误：步骤 {} 需发 {}, 持有 {}",
+                step_num, trade.from, current_currency
+            );
             reasons.push(msg.clone());
             step.message = msg;
             details.push(step);
@@ -182,8 +194,13 @@ pub async fn assess_risk(
             step.message.push_str(&format!("{}; ", msg));
         }
 
-        let approx_trade_value_usd =
-            estimate_value_usd(&current_currency, intermediate_amount, tickers, &stablecoin_prefs).unwrap_or(0.0);
+        let approx_trade_value_usd = estimate_value_usd(
+            &current_currency,
+            intermediate_amount,
+            tickers,
+            &stablecoin_prefs,
+        )
+        .unwrap_or(0.0);
 
         let mut estimated_executed_amount = 0.0f64;
         let mut slippage_percent_step = f64::NAN;
@@ -213,7 +230,9 @@ pub async fn assess_risk(
                     continue;
                 }
                 let cost_at_level = price * amount;
-                depth_usd_available += estimate_value_usd(&market.quote, cost_at_level, tickers, &stablecoin_prefs).unwrap_or(0.0);
+                depth_usd_available +=
+                    estimate_value_usd(&market.quote, cost_at_level, tickers, &stablecoin_prefs)
+                        .unwrap_or(0.0);
 
                 let remaining_spend = amount_to_spend - cost_accumulated;
                 if remaining_spend <= 1e-9 {
@@ -271,11 +290,12 @@ pub async fn assess_risk(
                 }
 
                 // 这里复刻 C++：以 base->USD 估值深度
-                    let level_usd = if market.base == "USDT" {
-                        amount * price
-                    } else {
-                        estimate_value_usd(&market.base, amount, tickers, &stablecoin_prefs).unwrap_or(0.0)
-                    };
+                let level_usd = if market.base == "USDT" {
+                    amount * price
+                } else {
+                    estimate_value_usd(&market.base, amount, tickers, &stablecoin_prefs)
+                        .unwrap_or(0.0)
+                };
                 depth_usd_available += level_usd;
 
                 let remaining_sell = amount_to_sell - amount_sold;
@@ -331,7 +351,10 @@ pub async fn assess_risk(
         if intermediate_amount >= 0.0 {
             step.slippage_percent = slippage_percent_step;
             let mut slippage_cost_step_usd = 0.0;
-            if slippage_percent_step.is_finite() && approx_trade_value_usd > 0.0 && slippage_percent_step > 0.0 {
+            if slippage_percent_step.is_finite()
+                && approx_trade_value_usd > 0.0
+                && slippage_percent_step > 0.0
+            {
                 slippage_cost_step_usd = approx_trade_value_usd * (slippage_percent_step / 100.0);
             }
             total_slippage_cost_usd += slippage_cost_step_usd;
@@ -366,7 +389,8 @@ pub async fn assess_risk(
         };
 
         if start_value_usd_est > 1e-9 {
-            total_estimated_slippage_percent = (total_slippage_cost_usd / start_value_usd_est) * 100.0;
+            total_estimated_slippage_percent =
+                (total_slippage_cost_usd / start_value_usd_est) * 100.0;
         } else if total_slippage_cost_usd == 0.0 {
             total_estimated_slippage_percent = 0.0;
         } else {
@@ -379,7 +403,9 @@ pub async fn assess_risk(
                 format_f64(estimated_profit_percent_after_slippage, 4)
             ));
         }
-        if total_estimated_slippage_percent.is_finite() && total_estimated_slippage_percent > max_slip_req {
+        if total_estimated_slippage_percent.is_finite()
+            && total_estimated_slippage_percent > max_slip_req
+        {
             reasons.push(format!(
                 "总滑点 ({}%) 高于阈值",
                 format_f64(total_estimated_slippage_percent, 4)
@@ -398,10 +424,14 @@ pub async fn assess_risk(
     if intermediate_amount < 0.0 {
         is_viable = false;
     }
-    if !estimated_profit_percent_after_slippage.is_finite() || estimated_profit_percent_after_slippage < min_profit_req {
+    if !estimated_profit_percent_after_slippage.is_finite()
+        || estimated_profit_percent_after_slippage < min_profit_req
+    {
         is_viable = false;
     }
-    if total_estimated_slippage_percent.is_finite() && total_estimated_slippage_percent > max_slip_req {
+    if total_estimated_slippage_percent.is_finite()
+        && total_estimated_slippage_percent > max_slip_req
+    {
         is_viable = false;
     }
     if intermediate_amount >= 0.0 && current_currency != path_start_currency {
@@ -441,7 +471,9 @@ async fn fetch_order_books_for_cycle(
 
     let mut tasks = Vec::new();
     for pair in pairs {
-        let Some(m) = markets.get(&pair) else { continue };
+        let Some(m) = markets.get(&pair) else {
+            continue;
+        };
         let binance_symbol = m.binance_symbol.clone();
         let sem = sem.clone();
         let rest = rest.clone();
@@ -481,7 +513,12 @@ fn parse_level(lv: &[String; 2]) -> Option<(f64, f64)> {
     }
 }
 
-fn estimate_value_usd(currency: &str, amount: f64, tickers: &TickerStore, stable_prefs: &[&str]) -> Option<f64> {
+fn estimate_value_usd(
+    currency: &str,
+    amount: f64,
+    tickers: &TickerStore,
+    stable_prefs: &[&str],
+) -> Option<f64> {
     if amount <= 0.0 || !amount.is_finite() {
         return None;
     }
@@ -515,7 +552,12 @@ fn format_f64(v: f64, precision: usize) -> String {
         return "NaN".to_string();
     }
     if v.is_infinite() {
-        return if v.is_sign_positive() { "Infinity" } else { "-Infinity" }.to_string();
+        return if v.is_sign_positive() {
+            "Infinity"
+        } else {
+            "-Infinity"
+        }
+        .to_string();
     }
     format!("{:.*}", precision, v)
 }

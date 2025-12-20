@@ -111,4 +111,3 @@ impl Config {
         self.max_arbitrage_depth = depth;
     }
 }
-

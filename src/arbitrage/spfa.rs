@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use crate::arbitrage::graph::{EdgeKind, Graph};
 use crate::domain::{CycleInfo, Trade};
@@ -74,8 +74,6 @@ pub fn find_negative_cycles_spfa(
     candidate_nodes.sort_unstable();
     candidate_nodes.dedup();
 
-    let edge_lookup = build_edge_lookup(graph);
-
     let mut found_signatures: HashSet<Vec<usize>> = HashSet::new();
     let mut node_in_cycle = vec![false; n];
     let mut cycles = Vec::new();
@@ -136,7 +134,7 @@ pub fn find_negative_cycles_spfa(
         }
 
         if let Some(cycle) =
-            reconstruct_cycle(graph, pair_names, &edge_lookup, &cycle_node_indices, depth)
+            reconstruct_cycle(graph, pair_names, &cycle_node_indices, depth)
         {
             found_signatures.insert(signature);
             for &node_idx in cycle_node_indices.iter().take(depth) {
@@ -151,18 +149,9 @@ pub fn find_negative_cycles_spfa(
     Ok(cycles)
 }
 
-fn build_edge_lookup(graph: &Graph) -> HashMap<(usize, usize), usize> {
-    let mut map = HashMap::with_capacity(graph.edges.len());
-    for (i, e) in graph.edges.iter().enumerate() {
-        map.entry((e.from, e.to)).or_insert(i);
-    }
-    map
-}
-
 fn reconstruct_cycle(
     graph: &Graph,
     pair_names: &[String],
-    edge_lookup: &HashMap<(usize, usize), usize>,
     cycle_nodes: &[usize],
     depth: usize,
 ) -> Option<CycleInfo> {
@@ -176,7 +165,7 @@ fn reconstruct_cycle(
     for i in 0..depth {
         let u = cycle_nodes[i];
         let v = cycle_nodes[i + 1];
-        let edge_idx = *edge_lookup.get(&(u, v))?;
+        let edge_idx = *graph.edge_lookup.get(&(u, v))?;
         let e = &graph.edges[edge_idx];
         let pair = pair_names.get(e.pair_id)?.clone();
         let kind = match e.kind {

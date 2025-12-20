@@ -27,6 +27,7 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     pub adjacency: Vec<Vec<usize>>,
     pub currency_to_index: HashMap<String, usize>,
+    pub edge_lookup: HashMap<(usize, usize), usize>,
     pair_edges: Vec<(usize, usize)>, // (buy_edge_idx, sell_edge_idx)
     fee_multiplier_bits: AtomicU64,
     rebuild_all: AtomicBool,
@@ -58,6 +59,7 @@ pub fn build_static_graph(
             edges: Vec::new(),
             adjacency: Vec::new(),
             currency_to_index: HashMap::new(),
+            edge_lookup: HashMap::new(),
             pair_edges: Vec::new(),
             fee_multiplier_bits: AtomicU64::new(fee_multiplier.to_bits()),
             rebuild_all: AtomicBool::new(false),
@@ -73,6 +75,7 @@ pub fn build_static_graph(
     let mut edges = Vec::with_capacity(pairs.len() * 2);
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     let mut pair_edges = Vec::with_capacity(pairs.len());
+    let mut edge_lookup = HashMap::with_capacity(pairs.len() * 2);
 
     for (pair_id, pair) in pairs.iter().enumerate() {
         let m = markets
@@ -90,6 +93,7 @@ pub fn build_static_graph(
             weight_bits: AtomicU64::new(f64::NAN.to_bits()),
         });
         adjacency[quote_idx].push(buy_edge_idx);
+        edge_lookup.insert((quote_idx, base_idx), buy_edge_idx);
 
         let sell_edge_idx = edges.len();
         edges.push(Edge {
@@ -100,6 +104,7 @@ pub fn build_static_graph(
             weight_bits: AtomicU64::new(f64::NAN.to_bits()),
         });
         adjacency[base_idx].push(sell_edge_idx);
+        edge_lookup.insert((base_idx, quote_idx), sell_edge_idx);
 
         pair_edges.push((buy_edge_idx, sell_edge_idx));
     }
@@ -109,6 +114,7 @@ pub fn build_static_graph(
         edges,
         adjacency,
         currency_to_index,
+        edge_lookup,
         pair_edges,
         fee_multiplier_bits: AtomicU64::new(fee_multiplier.to_bits()),
         rebuild_all: AtomicBool::new(true),

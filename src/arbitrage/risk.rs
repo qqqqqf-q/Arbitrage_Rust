@@ -71,7 +71,7 @@ pub async fn assess_risk(
         .to_f64()
         .ok_or_else(|| anyhow::anyhow!("max_bid_ask_spread_percent_per_step 无法转换为 f64"))?;
 
-    let stablecoin_prefs: [&str; 2] = ["USDT", "USDC"];
+    let stablecoin_prefs: Vec<&str> = cfg.base_assets.iter().map(|s| s.as_str()).collect();
 
     if cycle.nodes.is_empty() {
         return Ok(RiskResult {

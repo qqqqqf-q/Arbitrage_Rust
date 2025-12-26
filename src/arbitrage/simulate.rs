@@ -21,7 +21,7 @@ pub fn simulate_full(
     cycle: &CycleInfo,
     actual_start_currency: &str,
     actual_start_amount: Decimal,
-    end_with_usdt: bool,
+    target_currency: Option<&str>,
     tickers: &TickerStore,
     markets: &HashMap<String, Market>,
     cfg: &Config,
@@ -66,12 +66,14 @@ pub fn simulate_full(
     }
 
     if !skip_initial_swap_and_first_step && sim_current_currency != *cycle_start_currency {
+        let intermediate_currency = pick_intermediate_currency(cfg);
         let swap = simulate_swap(
             &sim_current_currency,
             cycle_start_currency,
             sim_current_amount,
             tickers,
             fee_rate,
+            intermediate_currency,
         );
         if swap.estimated_to_amount > 1e-12 {
             sim_current_amount = swap.estimated_to_amount;
@@ -130,25 +132,25 @@ pub fn simulate_full(
         }
     }
 
-    if end_with_usdt && sim_current_currency != "USDT" {
-        let swap = simulate_swap(
-            &sim_current_currency,
-            "USDT",
-            sim_current_amount,
-            tickers,
-            fee_rate,
-        );
-        if swap.estimated_to_amount > 1e-12 {
-            sim_current_amount = swap.estimated_to_amount;
-            sim_current_currency = "USDT".to_string();
+    if let Some(target) = target_currency {
+        if sim_current_currency != target {
+            let intermediate_currency = pick_intermediate_currency(cfg);
+            let swap = simulate_swap(
+                &sim_current_currency,
+                target,
+                sim_current_amount,
+                tickers,
+                fee_rate,
+                intermediate_currency,
+            );
+            if swap.estimated_to_amount > 1e-12 {
+                sim_current_amount = swap.estimated_to_amount;
+                sim_current_currency = target.to_string();
+            }
         }
     }
 
-    let profit_target_currency = if end_with_usdt {
-        "USDT"
-    } else {
-        actual_start_currency
-    };
+    let profit_target_currency = target_currency.unwrap_or(actual_start_currency);
     let profit_amount: f64;
     let profit_percent: f64;
     let final_amount = sim_current_amount;
@@ -206,6 +208,19 @@ pub fn simulate_full(
     })
 }
 
+fn pick_intermediate_currency(cfg: &Config) -> &str {
+    if cfg.base_assets.iter().any(|s| s == "USDT") {
+        return "USDT";
+    }
+    if cfg.base_assets.iter().any(|s| s == "USDC") {
+        return "USDC";
+    }
+    cfg.base_assets
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("USDT")
+}
+
 #[derive(Debug, Clone)]
 struct SwapResult {
     estimated_to_amount: f64,
@@ -218,6 +233,7 @@ fn simulate_swap(
     from_amount: f64,
     tickers: &TickerStore,
     fee_rate: f64,
+    intermediate_currency: &str,
 ) -> SwapResult {
     let mut out = SwapResult {
         estimated_to_amount: 0.0,
@@ -226,7 +242,6 @@ fn simulate_swap(
 
     let direct_forward = format!("{}/{}", to_currency, from_currency);
     let direct_backward = format!("{}/{}", from_currency, to_currency);
-    let intermediate_currency = "USDT";
 
     // 1) 直接卖出 from -> to (symbol: from/to, 用 bid)
     if let Some(tkr) = tickers.get_by_pair(&direct_backward) {

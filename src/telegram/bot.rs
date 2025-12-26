@@ -248,6 +248,13 @@ impl TelegramController {
             0.0
         };
 
+        let ws_count = self.ctx.perf_counters.ws_msg_count.load(Ordering::Relaxed);
+        let ws_bytes = self.ctx.perf_counters.ws_msg_bytes.load(Ordering::Relaxed);
+        let ws_avg_parse_ns = self.ctx.perf_counters.ws_avg_parse_ns();
+        let ws_avg_apply_ns = self.ctx.perf_counters.ws_avg_apply_ns();
+        let ws_max_parse_ns = self.ctx.perf_counters.ws_parse_ns_max.load(Ordering::Relaxed);
+        let ws_max_apply_ns = self.ctx.perf_counters.ws_apply_ns_max.load(Ordering::Relaxed);
+
         let cfg = self.ctx.cfg.read().await.clone();
 
         let status_text = format!(
@@ -256,15 +263,22 @@ impl TelegramController {
                 "<b>运行控制:</b>\n",
                 "  计算循环: {}\n",
                 "  自动交易: {}\n",
+                "  maker_only: {}\n",
+                "  base_assets: {}\n",
                 "<b>连接与数据:</b>\n",
                 "  WebSocket: {}/{} 连接块活跃\n",
                 "  缓存Tickers: {} (最后更新: {:.1}s 前)\n",
                 "  账户余额: 持有 {} 种资产\n",
+                "  WS 消息: {} 条, {:.2} MB\n",
                 "<b>性能统计:</b>\n",
                 "  循环速率: {:.2} 周期/秒\n",
                 "  上次计算耗时: {}\n",
                 "    - 快照: {}, 图构建: {}\n",
                 "    - BF: {}, 验证: {}\n",
+                "    - 模拟: {} ({} 次)\n",
+                "    - 风控: {} ({} 次)\n",
+                "  WS 解析: avg {}, max {}\n",
+                "  WS 应用: avg {}, max {}\n",
                 "<b>Rust 核心:</b>\n",
                 "  图构建: 已启用\n",
                 "  SPFA: 已启用\n",
@@ -280,17 +294,29 @@ impl TelegramController {
             } else {
                 "已禁用"
             },
+            if cfg.maker_only { "true" } else { "false" },
+            cfg.base_assets.join(","),
             ws_ok,
             ws_total,
             tickers_len,
             last_update_ago,
             self.ctx.balances.snapshot_sorted().len(),
+            ws_count,
+            (ws_bytes as f64) / (1024.0 * 1024.0),
             cps,
             format_duration_high_precision(perf.last_cycle_duration_sec),
             format_duration_high_precision(perf.snap_copy_duration_sec),
             format_duration_high_precision(perf.graph_build_duration_sec),
             format_duration_high_precision(perf.bf_call_duration_sec),
             format_duration_high_precision(perf.verification_duration_sec),
+            format_duration_high_precision(perf.sim_total_duration_sec),
+            perf.sim_calls,
+            format_duration_high_precision(perf.risk_total_duration_sec),
+            perf.risk_calls,
+            format_duration_high_precision((ws_avg_parse_ns as f64) / 1_000_000_000.0),
+            format_duration_high_precision((ws_max_parse_ns as f64) / 1_000_000_000.0),
+            format_duration_high_precision((ws_avg_apply_ns as f64) / 1_000_000_000.0),
+            format_duration_high_precision((ws_max_apply_ns as f64) / 1_000_000_000.0),
         );
 
         bot.send_message(msg.chat.id, status_text)

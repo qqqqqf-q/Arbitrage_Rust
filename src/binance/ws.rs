@@ -15,6 +15,7 @@ use crate::binance::models::{ExchangeInfo, SymbolFilter};
 use crate::binance::rest::BinanceRestClient;
 use crate::config::Config;
 use crate::domain::Market;
+use crate::perf::PerfCounters;
 use crate::store::TickerStore;
 
 pub async fn load_spot_markets(
@@ -104,6 +105,8 @@ pub fn spawn_book_ticker_streams(
     store: Arc<TickerStore>,
     graph: Arc<Graph>,
     ticker_notify: Arc<tokio::sync::Notify>,
+    ticker_notify_armed: Arc<AtomicBool>,
+    perf: Arc<PerfCounters>,
     chunk_size: usize,
 ) -> (Vec<tokio::task::JoinHandle<()>>, Arc<Vec<AtomicBool>>) {
     let mut chunks: Vec<Vec<String>> = Vec::new();
@@ -132,6 +135,8 @@ pub fn spawn_book_ticker_streams(
             let store = store.clone();
             let graph = graph.clone();
             let ticker_notify = ticker_notify.clone();
+            let ticker_notify_armed = ticker_notify_armed.clone();
+            let perf = perf.clone();
             let conn_ok = conn_ok.clone();
             let binance_to_id = binance_to_id.clone();
 
@@ -146,6 +151,8 @@ pub fn spawn_book_ticker_streams(
                     store,
                     graph,
                     ticker_notify,
+                    ticker_notify_armed,
+                    perf,
                     conn_ok,
                     binance_to_id,
                 )
@@ -163,6 +170,8 @@ async fn run_ws_chunk(
     store: Arc<TickerStore>,
     graph: Arc<Graph>,
     ticker_notify: Arc<tokio::sync::Notify>,
+    ticker_notify_armed: Arc<AtomicBool>,
+    perf: Arc<PerfCounters>,
     conn_ok: Arc<Vec<AtomicBool>>,
     binance_to_id: Arc<HashMap<String, usize>>,
 ) {
@@ -178,11 +187,15 @@ async fn run_ws_chunk(
         streams.join("/")
     );
 
+    let mut backoff = std::time::Duration::from_secs(1);
+    let backoff_max = std::time::Duration::from_secs(30);
+
     loop {
         match tokio_tungstenite::connect_async(&url).await {
             Ok((ws, _)) => {
                 info!("块 {}: WebSocket 连接成功。", chunk_index + 1);
                 conn_ok[chunk_index].store(true, Ordering::Relaxed);
+                backoff = std::time::Duration::from_secs(1);
 
                 let (_, mut reader) = ws.split();
                 while let Some(msg) = reader.next().await {
@@ -193,6 +206,8 @@ async fn run_ws_chunk(
                                 &store,
                                 &graph,
                                 &ticker_notify,
+                                &ticker_notify_armed,
+                                &perf,
                                 &binance_to_id,
                             ) {
                                 warn!("块 {}: 解析消息失败: {}", chunk_index + 1, e);
@@ -204,6 +219,8 @@ async fn run_ws_chunk(
                                 &store,
                                 &graph,
                                 &ticker_notify,
+                                &ticker_notify_armed,
+                                &perf,
                                 &binance_to_id,
                             ) {
                                 warn!("块 {}: 解析消息失败: {}", chunk_index + 1, e);
@@ -225,7 +242,8 @@ async fn run_ws_chunk(
         }
 
         conn_ok[chunk_index].store(false, Ordering::Relaxed);
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(backoff_max);
     }
 }
 
@@ -234,8 +252,12 @@ fn handle_ws_message(
     store: &TickerStore,
     graph: &Graph,
     ticker_notify: &tokio::sync::Notify,
+    ticker_notify_armed: &AtomicBool,
+    perf: &PerfCounters,
     binance_to_id: &HashMap<String, usize>,
 ) -> anyhow::Result<()> {
+    let bytes_len = bytes.len();
+    let parse_start = std::time::Instant::now();
     let v = simd_json::to_borrowed_value(&mut bytes).context("JSON 解析失败")?;
 
     let data = v
@@ -244,24 +266,22 @@ fn handle_ws_message(
         .context("缺少 data")?;
 
     let sym = data.get("s").and_then(|s| s.as_str()).context("缺少 s")?;
-    let bid = data
-        .get("b")
-        .and_then(|s| s.as_str())
-        .unwrap_or("0")
-        .parse::<f64>()
-        .unwrap_or(0.0);
-    let ask = data
-        .get("a")
-        .and_then(|s| s.as_str())
-        .unwrap_or("0")
-        .parse::<f64>()
-        .unwrap_or(0.0);
+    let bid_s = data.get("b").and_then(|s| s.as_str()).unwrap_or("0");
+    let ask_s = data.get("a").and_then(|s| s.as_str()).unwrap_or("0");
+    let bid: f64 = fast_float::parse(bid_s).unwrap_or(0.0);
+    let ask: f64 = fast_float::parse(ask_s).unwrap_or(0.0);
+    let parse_ns = parse_start.elapsed().as_nanos() as u64;
 
     if let Some(&pair_id) = binance_to_id.get(sym) {
+        let apply_start = std::time::Instant::now();
         let now_ms = crate::app::now_ms();
         store.update_by_id(pair_id, bid, ask, now_ms);
         graph.update_pair_weights(pair_id, bid, ask);
-        ticker_notify.notify_one();
+        if !ticker_notify_armed.swap(true, Ordering::Relaxed) {
+            ticker_notify.notify_one();
+        }
+        let apply_ns = apply_start.elapsed().as_nanos() as u64;
+        perf.record_ws_message(bytes_len, parse_ns, apply_ns);
     }
     Ok(())
 }

@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use rust_decimal::Decimal;
@@ -17,9 +18,11 @@ use crate::arbitrage::{
     spfa::{SpfaWorkspace, find_negative_cycles_spfa_with_workspace},
 };
 use crate::binance::rest::BinanceRestClient;
+use crate::binance::trade_ws::BinanceTradeWsClient;
 use crate::binance::ws::spawn_book_ticker_streams;
 use crate::config::{Config, Credentials};
 use crate::domain::{CycleInfo, Market};
+use crate::perf::PerfCounters;
 use crate::store::TickerStore;
 use crate::telegram::bot::TelegramController;
 
@@ -31,6 +34,10 @@ pub struct PerfStatsSnapshot {
     pub graph_build_duration_sec: f64,
     pub bf_call_duration_sec: f64,
     pub verification_duration_sec: f64,
+    pub sim_total_duration_sec: f64,
+    pub risk_total_duration_sec: f64,
+    pub sim_calls: u64,
+    pub risk_calls: u64,
 }
 
 #[derive(Debug, Default)]
@@ -42,6 +49,10 @@ pub struct PerfStats {
     pub graph_build_duration_sec: f64,
     pub bf_call_duration_sec: f64,
     pub verification_duration_sec: f64,
+    pub sim_total_duration_sec: f64,
+    pub risk_total_duration_sec: f64,
+    pub sim_calls: u64,
+    pub risk_calls: u64,
 }
 
 impl PerfStats {
@@ -53,6 +64,10 @@ impl PerfStats {
             graph_build_duration_sec: self.graph_build_duration_sec,
             bf_call_duration_sec: self.bf_call_duration_sec,
             verification_duration_sec: self.verification_duration_sec,
+            sim_total_duration_sec: self.sim_total_duration_sec,
+            risk_total_duration_sec: self.risk_total_duration_sec,
+            sim_calls: self.sim_calls,
+            risk_calls: self.risk_calls,
         }
     }
 }
@@ -97,20 +112,24 @@ pub struct AppContext {
     pub graph: Arc<Graph>,
     pub balances: Arc<BalanceStore>,
     pub perf: Arc<Mutex<PerfStats>>,
+    pub perf_counters: Arc<PerfCounters>,
     pub markets: Arc<HashMap<String, Market>>,
     pub websocket_symbols: Arc<Vec<String>>, // 形如 "BTC/USDT"
     pub ws_conn_ok: Arc<Vec<std::sync::atomic::AtomicBool>>,
+    pub trade_ws: BinanceTradeWsClient,
     pub bot: Bot,
     pub user_chat_id: Arc<Mutex<Option<ChatId>>>,
     pub trade_semaphore: Arc<tokio::sync::Semaphore>,
     pub ticker_notify: Arc<tokio::sync::Notify>,
+    pub ticker_notify_armed: Arc<AtomicBool>,
 }
 
 pub async fn run() -> anyhow::Result<()> {
     let creds = Credentials::from_env()?;
-    let cfg = Arc::new(RwLock::new(Config::default()));
+    let cfg = Arc::new(RwLock::new(Config::from_env_or_default()));
 
     let rest = BinanceRestClient::new(&creds.api_key, &creds.api_secret)?;
+    let trade_ws = BinanceTradeWsClient::connect(&creds.api_key, &creds.api_secret).await?;
 
     info!("加载币安现货市场中...");
     let markets = crate::binance::ws::load_spot_markets(&rest).await?;
@@ -134,6 +153,7 @@ pub async fn run() -> anyhow::Result<()> {
         cfg.read().await.taker_fee_rate,
     )?);
     let balances = Arc::new(BalanceStore::new());
+    let perf_counters = Arc::new(PerfCounters::default());
     let perf = Arc::new(Mutex::new(PerfStats {
         start_epoch_ms: now_ms(),
         ..PerfStats::default()
@@ -141,12 +161,15 @@ pub async fn run() -> anyhow::Result<()> {
 
     let ws_chunk_size = cfg.read().await.websocket_chunk_size;
     let ticker_notify = Arc::new(tokio::sync::Notify::new());
+    let ticker_notify_armed = Arc::new(AtomicBool::new(false));
     let (ws_tasks, ws_conn_ok) = spawn_book_ticker_streams(
         websocket_symbols.clone(),
         markets.clone(),
         tickers.clone(),
         graph.clone(),
         ticker_notify.clone(),
+        ticker_notify_armed.clone(),
+        perf_counters.clone(),
         ws_chunk_size,
     );
 
@@ -159,13 +182,16 @@ pub async fn run() -> anyhow::Result<()> {
         graph: graph.clone(),
         balances: balances.clone(),
         perf: perf.clone(),
+        perf_counters: perf_counters.clone(),
         markets: Arc::new(markets),
         websocket_symbols: Arc::new(websocket_symbols),
         ws_conn_ok,
+        trade_ws: trade_ws.clone(),
         bot: bot.clone(),
         user_chat_id: user_chat_id.clone(),
         trade_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
         ticker_notify,
+        ticker_notify_armed,
     });
 
     let tg = TelegramController::new(bot, creds.authorized_user_id, ctx.clone())?;
@@ -268,8 +294,12 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
 
         let seq = ctx.tickers.update_seq();
         if seq == 0 || seq == last_processed_seq {
-            let _ = tokio::time::timeout(Duration::from_millis(250), ctx.ticker_notify.notified())
-                .await;
+            ctx.ticker_notify_armed.store(false, Ordering::Relaxed);
+            let seq2 = ctx.tickers.update_seq();
+            if seq2 != 0 && seq2 != last_processed_seq {
+                continue;
+            }
+            let _ = tokio::time::timeout(Duration::from_millis(250), ctx.ticker_notify.notified()).await;
             continue;
         }
         last_processed_seq = seq;
@@ -288,71 +318,96 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
         let bf_sec = bf_start.elapsed().as_secs_f64();
 
         let verify_start = std::time::Instant::now();
+        let mut sim_sec_total = 0.0f64;
+        let mut risk_sec_total = 0.0f64;
+        let mut sim_calls = 0u64;
+        let mut risk_calls = 0u64;
         if !cycles.is_empty() {
             for cycle in cycles {
-                let sim = simulate_full(
-                    &cycle,
-                    "USDT",
-                    cfg_snapshot.simulation_start_amount,
-                    true,
-                    &ctx.tickers,
-                    &ctx.markets,
-                    &cfg_snapshot,
-                )?;
+                let path_str = cycle.nodes.join(" -> ");
+                for base_asset in &cfg_snapshot.base_assets {
+                    let sim_start = std::time::Instant::now();
+                    let sim = simulate_full(
+                        &cycle,
+                        base_asset,
+                        cfg_snapshot.simulation_start_amount,
+                        Some(base_asset),
+                        &ctx.tickers,
+                        &ctx.markets,
+                        &cfg_snapshot,
+                    )?;
+                    sim_sec_total += sim_start.elapsed().as_secs_f64();
+                    sim_calls += 1;
 
-                if sim.verified {
-                    let path_str = cycle.nodes.join(" -> ");
+                    if !sim.verified {
+                        continue;
+                    }
+
                     info!(
-                        "模拟验证成功: {} (模拟利润: {:.4}%)",
-                        path_str, sim.profit_percent
+                        "模拟验证成功: base={} path={} (模拟利润: {:.4}%)",
+                        base_asset, path_str, sim.profit_percent
                     );
 
-                    if cfg_snapshot.auto_trade_enabled {
-                        let permit = match ctx.trade_semaphore.clone().try_acquire_owned() {
-                            Ok(p) => p,
-                            Err(_) => {
-                                info!("已有交易任务在运行，跳过机会: {}", path_str);
-                                continue;
-                            }
-                        };
+                    if !cfg_snapshot.auto_trade_enabled {
+                        break;
+                    }
 
-                        let risk = assess_risk(
-                            &cycle,
-                            cfg_snapshot.simulation_start_amount,
-                            rest,
-                            &ctx.markets,
-                            &ctx.tickers,
-                            &cfg_snapshot,
+                    let permit = match ctx.trade_semaphore.clone().try_acquire_owned() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            info!("已有交易任务在运行，跳过机会: {}", path_str);
+                            break;
+                        }
+                    };
+
+                    let risk_start = std::time::Instant::now();
+                    let risk = assess_risk(
+                        &cycle,
+                        cfg_snapshot.simulation_start_amount,
+                        rest,
+                        &ctx.markets,
+                        &ctx.tickers,
+                        &cfg_snapshot,
+                    )
+                    .await?;
+                    risk_sec_total += risk_start.elapsed().as_secs_f64();
+                    risk_calls += 1;
+                    if risk.is_viable {
+                        info!(
+                            "风险评估通过: base={} path={}，准备执行...",
+                            base_asset, path_str
+                        );
+                        notify_text(
+                            ctx,
+                            format!(
+                                "检测到机会 (base={} 模拟利润 {:.4}%)，风险评估通过，开始执行...\n路径: <code>{}</code>",
+                                base_asset, sim.profit_percent, path_str
+                            ),
                         )
-                        .await?;
-                        if risk.is_viable {
-                            info!("风险评估通过: {}，准备执行...", path_str);
-                            notify_text(ctx, format!(
-                                "检测到机会 (模拟利润 {:.4}%)，风险评估通过，开始执行...\n路径: <code>{}</code>",
-                                sim.profit_percent, path_str
-                            ))
-                            .await;
+                        .await;
 
-                            let ctx_clone = Arc::new(ctx_clone_shallow(ctx));
-                            let rest = rest.clone();
+                        let ctx_clone = Arc::new(ctx_clone_shallow(ctx));
                             let cycle_clone = cycle.clone();
+                            let base_asset = base_asset.clone();
                             tokio::spawn(async move {
                                 let _permit = permit;
                                 if let Err(e) =
-                                    execute_arbitrage_path(&rest, &ctx_clone, &cycle_clone).await
+                                    execute_arbitrage_path(&ctx_clone, &cycle_clone, &base_asset)
+                                        .await
                                 {
                                     notify_text(&*ctx_clone, format!("套利执行失败: {}", e)).await;
                                 }
-                            });
-                            break;
-                        } else {
-                            warn!(
-                                "风险评估未通过: {}。原因: {}",
-                                path_str,
-                                risk.reasons.join("; ")
-                            );
-                        }
+                        });
+                        break;
+                    } else {
+                        warn!(
+                            "风险评估未通过: {}。原因: {}",
+                            path_str,
+                            risk.reasons.join("; ")
+                        );
                     }
+
+                    break;
                 }
             }
         }
@@ -367,6 +422,10 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
             p.graph_build_duration_sec = 0.0;
             p.bf_call_duration_sec = bf_sec;
             p.verification_duration_sec = verify_sec;
+            p.sim_total_duration_sec = sim_sec_total;
+            p.risk_total_duration_sec = risk_sec_total;
+            p.sim_calls = sim_calls;
+            p.risk_calls = risk_calls;
         }
     }
 }
@@ -377,6 +436,7 @@ struct ShallowCtx {
     tickers: Arc<TickerStore>,
     balances: Arc<BalanceStore>,
     markets: Arc<HashMap<String, Market>>,
+    trade_ws: BinanceTradeWsClient,
     bot: Bot,
     user_chat_id: Arc<Mutex<Option<ChatId>>>,
 }
@@ -387,6 +447,7 @@ fn ctx_clone_shallow(ctx: &AppContext) -> ShallowCtx {
         tickers: ctx.tickers.clone(),
         balances: ctx.balances.clone(),
         markets: ctx.markets.clone(),
+        trade_ws: ctx.trade_ws.clone(),
         bot: ctx.bot.clone(),
         user_chat_id: ctx.user_chat_id.clone(),
     }
@@ -428,9 +489,9 @@ impl Notifier for ShallowCtx {
 }
 
 async fn execute_arbitrage_path(
-    rest: &BinanceRestClient,
     ctx: &ShallowCtx,
     cycle: &CycleInfo,
+    base_asset: &str,
 ) -> anyhow::Result<()> {
     let cfg = ctx.cfg.read().await.clone();
 
@@ -438,7 +499,7 @@ async fn execute_arbitrage_path(
     info!("--- [执行开始] 开始执行路径: {} ---", path_str);
 
     let min_start_usd = cfg.min_trade_amount_usd_equivalent;
-    let start_fund_currency = "USDT";
+    let start_fund_currency = base_asset;
     let start_balance = ctx.balances.get(start_fund_currency);
     if start_balance < min_start_usd {
         let msg = format!(
@@ -460,7 +521,8 @@ async fn execute_arbitrage_path(
 
     if current_currency != cycle_start {
         let res =
-            execute_real_swap(rest, ctx, &current_currency, &cycle_start, current_amount).await?;
+            execute_real_swap(&ctx.trade_ws, ctx, &current_currency, &cycle_start, current_amount)
+                .await?;
         current_amount = res.received_amount;
         current_currency = res.received_currency;
     }
@@ -481,7 +543,14 @@ async fn execute_arbitrage_path(
             .map(|t| if trade.kind == "BUY" { t.ask } else { t.bid });
 
         let order = if trade.kind == "BUY" && cfg.use_quote_order_qty_for_buy {
-            place_market_order_with_retry(rest, market, "BUY", None, Some(current_amount), &cfg)
+            place_market_order_with_retry(
+                &ctx.trade_ws,
+                market,
+                "BUY",
+                None,
+                Some(current_amount),
+                &cfg,
+            )
                 .await?
         } else if trade.kind == "BUY" {
             let qty = match expected_price {
@@ -490,9 +559,17 @@ async fn execute_arbitrage_path(
                 }
                 _ => anyhow::bail!("缺少预期价格，无法计算 BUY 数量"),
             };
-            place_market_order_with_retry(rest, market, "BUY", Some(qty), None, &cfg).await?
+            place_market_order_with_retry(&ctx.trade_ws, market, "BUY", Some(qty), None, &cfg)
+                .await?
         } else {
-            place_market_order_with_retry(rest, market, "SELL", Some(current_amount), None, &cfg)
+            place_market_order_with_retry(
+                &ctx.trade_ws,
+                market,
+                "SELL",
+                Some(current_amount),
+                None,
+                &cfg,
+            )
                 .await?
         };
 
@@ -514,8 +591,15 @@ async fn execute_arbitrage_path(
         .await;
     }
 
-    if current_currency != "USDT" {
-        let res = execute_real_swap(rest, ctx, &current_currency, "USDT", current_amount).await?;
+    if current_currency != start_fund_currency {
+        let res = execute_real_swap(
+            &ctx.trade_ws,
+            ctx,
+            &current_currency,
+            start_fund_currency,
+            current_amount,
+        )
+        .await?;
         current_amount = res.received_amount;
         current_currency = res.received_currency;
     }
@@ -543,7 +627,7 @@ struct OrderExecResult {
 }
 
 async fn execute_real_swap(
-    rest: &BinanceRestClient,
+    trade: &BinanceTradeWsClient,
     ctx: &ShallowCtx,
     from_currency: &str,
     to_currency: &str,
@@ -565,7 +649,7 @@ async fn execute_real_swap(
         let expected_price = ctx.tickers.get_by_pair(&symbol_buy).map(|t| t.ask);
         if cfg.use_quote_order_qty_for_buy {
             return place_market_order_with_retry(
-                rest,
+                trade,
                 market,
                 "BUY",
                 None,
@@ -580,12 +664,12 @@ async fn execute_real_swap(
             }
             _ => anyhow::bail!("缺少预期价格，无法计算 BUY 数量"),
         };
-        return place_market_order_with_retry(rest, market, "BUY", Some(qty), None, &cfg).await;
+        return place_market_order_with_retry(trade, market, "BUY", Some(qty), None, &cfg).await;
     }
 
     let symbol_sell = format!("{}/{}", from_currency, to_currency);
     if let Some(market) = ctx.markets.get(&symbol_sell) {
-        return place_market_order_with_retry(rest, market, "SELL", Some(from_amount), None, &cfg)
+        return place_market_order_with_retry(trade, market, "SELL", Some(from_amount), None, &cfg)
             .await;
     }
 
@@ -597,7 +681,7 @@ async fn execute_real_swap(
 }
 
 async fn place_market_order_with_retry(
-    rest: &BinanceRestClient,
+    trade: &BinanceTradeWsClient,
     market: &Market,
     side: &str,
     quantity: Option<Decimal>,
@@ -608,11 +692,13 @@ async fn place_market_order_with_retry(
     let retry_delay = cfg.trade_retry_delay_sec;
 
     for attempt in 0..=max_retries {
-        match rest
+        let order_start = Instant::now();
+        match trade
             .create_market_order(&market.binance_symbol, side, quantity, quote_order_qty)
             .await
         {
             Ok(order) => {
+                let latency_ms = order_start.elapsed().as_secs_f64() * 1000.0;
                 let executed_qty = order
                     .executed_qty
                     .parse::<Decimal>()
@@ -646,10 +732,26 @@ async fn place_market_order_with_retry(
                         received_currency: market.quote.clone(),
                     }
                 };
+                info!(
+                    "下单成功: symbol={} side={} order_id={} status={} latency_ms={:.2}",
+                    market.binance_symbol,
+                    side,
+                    order.order_id,
+                    order.status,
+                    latency_ms
+                );
                 return Ok(res);
             }
             Err(e) => {
-                warn!("交易尝试 #{} 失败: {}", attempt + 1, e);
+                let latency_ms = order_start.elapsed().as_secs_f64() * 1000.0;
+                warn!(
+                    "交易尝试 #{} 失败: symbol={} side={} latency_ms={:.2} err={}",
+                    attempt + 1,
+                    market.binance_symbol,
+                    side,
+                    latency_ms,
+                    e
+                );
                 if attempt >= max_retries {
                     return Err(e);
                 }

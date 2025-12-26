@@ -40,6 +40,9 @@ pub struct Config {
     pub running: bool,
     pub auto_trade_enabled: bool,
 
+    pub base_assets: Vec<String>,
+    pub maker_only: bool,
+
     pub simulation_start_amount: Decimal,
     pub taker_fee_rate: Decimal,
     pub min_trade_amount_usd_equivalent: Decimal,
@@ -71,6 +74,9 @@ impl Default for Config {
             running: true,
             auto_trade_enabled: false,
 
+            base_assets: vec!["USDT".to_string()],
+            maker_only: false,
+
             simulation_start_amount: dec!(100.0),
             taker_fee_rate: dec!(0.00075),
             min_trade_amount_usd_equivalent: dec!(6.0),
@@ -79,7 +85,7 @@ impl Default for Config {
             trade_retry_delay_sec: 1.5,
 
             min_profit_full_sim_percent: dec!(0.05),
-            max_arbitrage_depth: 5,
+            max_arbitrage_depth: 6,
             min_24h_quote_volume: dec!(100000),
 
             risk_assessment_enabled: true,
@@ -99,6 +105,39 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn from_env_or_default() -> Self {
+        let mut cfg = Self::default();
+
+        if let Ok(v) = env::var("BASE_ASSETS") {
+            let mut list: Vec<String> = v
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_uppercase())
+                .collect();
+            list.sort();
+            list.dedup();
+            if !list.is_empty() {
+                cfg.base_assets = list;
+            }
+        }
+
+        if let Ok(v) = env::var("MAKER_ONLY") {
+            let v = v.trim().to_lowercase();
+            cfg.maker_only = matches!(v.as_str(), "1" | "true" | "yes" | "on");
+        }
+
+        if let Ok(v) = env::var("MAX_ARBITRAGE_DEPTH") {
+            if let Ok(d) = v.trim().parse::<usize>() {
+                if d > 0 {
+                    cfg.max_arbitrage_depth = d;
+                }
+            }
+        }
+
+        cfg
+    }
+
     pub fn set_fee_rate(&mut self, fee: Decimal) {
         self.taker_fee_rate = fee;
     }
@@ -109,5 +148,12 @@ impl Config {
 
     pub fn set_max_depth(&mut self, depth: usize) {
         self.max_arbitrage_depth = depth;
+    }
+
+    pub fn primary_base_asset(&self) -> &str {
+        self.base_assets
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("USDT")
     }
 }

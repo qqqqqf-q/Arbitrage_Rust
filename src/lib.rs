@@ -3,5 +3,6 @@ pub mod arbitrage;
 pub mod binance;
 pub mod config;
 pub mod domain;
+pub mod perf;
 pub mod store;
 pub mod telegram;

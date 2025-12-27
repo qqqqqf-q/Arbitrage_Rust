@@ -1,0 +1,9 @@
+I see you entered "123" but I'm not sure what specific task you'd like me to perform. I notice we're in a Rust project directory (rust_recode). Could you please provide more details about what you need help with? For example:
+
+- Do you want me to analyze the Rust codebase?
+- Fix a bug in the code?
+- Implement a new feature?
+- Explain how certain parts of the code work?
+- Run tests or build the project?
+
+The more specific you can be, the better I can assist you.

@@ -11,7 +11,7 @@
 - `BASE_ASSETS`（可选；起始/结算基币列表，逗号分隔，例如 `USDT` / `USDC` / `USDT,USDC`）
 - `MAX_ARBITRAGE_DEPTH`（可选；最大跳数/深度，默认 `6`）
 - `MAKER_ONLY`（可选；默认 `false`。本项目当前使用 MARKET（市价/吃单）执行真实交易；如你想禁止自动交易走市价，可设置 `MAKER_ONLY=true` 并自行接入限价单逻辑）
-- 说明：行情使用 Binance 行情 WebSocket；下单使用 Binance 交易 WebSocket API（`wss://ws-api.binance.com/ws-api/v3`）以降低每笔 HTTP 建连/握手开销（余额/风控相关仍会走 REST）。
+- 说明：行情使用 Binance 行情 WebSocket；订单簿风控使用 Depth WebSocket（`@depth10@100ms` 等）；下单使用 Binance 交易 WebSocket API（`wss://ws-api.binance.com/ws-api/v3`）。余额/交易所信息等仍会走 REST。
 
 Windows（当前 PowerShell 会话）示例：
 

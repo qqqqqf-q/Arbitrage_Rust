@@ -19,11 +19,11 @@ use crate::arbitrage::{
 };
 use crate::binance::rest::BinanceRestClient;
 use crate::binance::trade_ws::BinanceTradeWsClient;
-use crate::binance::ws::spawn_book_ticker_streams;
+use crate::binance::ws::{spawn_book_ticker_streams, spawn_partial_depth_streams};
 use crate::config::{Config, Credentials};
 use crate::domain::{CycleInfo, Market};
 use crate::perf::PerfCounters;
-use crate::store::TickerStore;
+use crate::store::{OrderBookStore, TickerStore};
 use crate::telegram::bot::TelegramController;
 
 #[derive(Debug, Default, Clone)]
@@ -110,6 +110,7 @@ pub struct AppContext {
     pub cfg: Arc<RwLock<Config>>,
     pub tickers: Arc<TickerStore>,
     pub graph: Arc<Graph>,
+    pub order_books: Arc<OrderBookStore>,
     pub balances: Arc<BalanceStore>,
     pub perf: Arc<Mutex<PerfStats>>,
     pub perf_counters: Arc<PerfCounters>,
@@ -147,6 +148,7 @@ pub async fn run() -> anyhow::Result<()> {
     );
 
     let tickers = Arc::new(TickerStore::new(websocket_symbols.clone()));
+    let order_books = Arc::new(OrderBookStore::new(websocket_symbols.clone()));
     let graph = Arc::new(build_static_graph(
         &markets,
         &websocket_symbols,
@@ -173,6 +175,14 @@ pub async fn run() -> anyhow::Result<()> {
         ws_chunk_size,
     );
 
+    let (depth_ws_tasks, _depth_ws_conn_ok) = spawn_partial_depth_streams(
+        websocket_symbols.clone(),
+        markets.clone(),
+        order_books.clone(),
+        ws_chunk_size,
+        cfg.read().await.order_book_depth,
+    );
+
     let bot = Bot::new(creds.telegram_bot_token.as_str());
     let user_chat_id = Arc::new(Mutex::new(None));
 
@@ -180,6 +190,7 @@ pub async fn run() -> anyhow::Result<()> {
         cfg: cfg.clone(),
         tickers: tickers.clone(),
         graph: graph.clone(),
+        order_books: order_books.clone(),
         balances: balances.clone(),
         perf: perf.clone(),
         perf_counters: perf_counters.clone(),
@@ -212,6 +223,9 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     for t in ws_tasks {
+        t.abort();
+    }
+    for t in depth_ws_tasks {
         t.abort();
     }
     balance_task.abort();
@@ -262,7 +276,7 @@ fn spawn_arbitrage_loop(
     })
 }
 
-async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyhow::Result<()> {
+async fn main_arbitrage_loop(_rest: &BinanceRestClient, ctx: &AppContext) -> anyhow::Result<()> {
     info!("主循环预热中，等待 WebSocket Ticker 数据稳定...");
     let required = ((ctx.websocket_symbols.len() as f64) * 0.8) as usize;
     while ctx.tickers.valid_count() < required {
@@ -364,7 +378,7 @@ async fn main_arbitrage_loop(rest: &BinanceRestClient, ctx: &AppContext) -> anyh
                     let risk = assess_risk(
                         &cycle,
                         cfg_snapshot.simulation_start_amount,
-                        rest,
+                        &ctx.order_books,
                         &ctx.markets,
                         &ctx.tickers,
                         &cfg_snapshot,

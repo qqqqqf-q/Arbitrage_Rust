@@ -1,13 +1,11 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
-use tokio::sync::Semaphore;
 
-use crate::binance::rest::BinanceRestClient;
 use crate::config::Config;
 use crate::domain::{CycleInfo, Market, OrderBook};
+use crate::store::OrderBookStore;
 use crate::store::TickerStore;
 
 #[derive(Debug, Clone)]
@@ -35,7 +33,7 @@ pub struct RiskResult {
 pub async fn assess_risk(
     cycle: &CycleInfo,
     start_amount: Decimal,
-    rest: &BinanceRestClient,
+    books: &OrderBookStore,
     markets: &HashMap<String, Market>,
     tickers: &TickerStore,
     cfg: &Config,
@@ -103,7 +101,7 @@ pub async fn assess_risk(
         }
     });
 
-    let order_books = fetch_order_books_for_cycle(rest, cycle, markets, cfg).await?;
+    let order_books = fetch_order_books_for_cycle(books, cycle).await;
 
     let mut reasons: Vec<String> = Vec::new();
     let mut details: Vec<StepDetail> = Vec::new();
@@ -453,63 +451,50 @@ pub async fn assess_risk(
 }
 
 async fn fetch_order_books_for_cycle(
-    rest: &BinanceRestClient,
+    books: &OrderBookStore,
     cycle: &CycleInfo,
-    markets: &HashMap<String, Market>,
-    cfg: &Config,
-) -> anyhow::Result<HashMap<String, OrderBook>> {
+) -> HashMap<String, OrderBook> {
     let mut pairs: HashSet<String> = HashSet::new();
     for t in &cycle.trades {
         pairs.insert(t.pair.clone());
     }
     if pairs.is_empty() {
-        return Ok(HashMap::new());
+        return HashMap::new();
     }
 
-    let limit = cfg.order_book_depth;
-    let sem = Arc::new(Semaphore::new(cfg.orderbook_fetch_max_workers.max(1)));
+    let max_wait = std::time::Duration::from_millis(800);
+    let max_age_ms = 1500u64;
+    let start = std::time::Instant::now();
 
-    let mut tasks = Vec::new();
-    for pair in pairs {
-        let Some(m) = markets.get(&pair) else {
-            continue;
-        };
-        let binance_symbol = m.binance_symbol.clone();
-        let sem = sem.clone();
-        let rest = rest.clone();
-        tasks.push(tokio::spawn(async move {
-            let _permit = sem.acquire().await.ok()?;
-            let depth = rest.depth(&binance_symbol, limit).await.ok()?;
-            let bids = depth
-                .bids
-                .into_iter()
-                .filter_map(|lv| parse_level(&lv))
-                .collect::<Vec<_>>();
-            let asks = depth
-                .asks
-                .into_iter()
-                .filter_map(|lv| parse_level(&lv))
-                .collect::<Vec<_>>();
-            Some((pair, OrderBook { bids, asks }))
-        }));
-    }
+    loop {
+        let now_ms = crate::app::now_ms();
+        let mut out = HashMap::new();
+        let mut missing = 0usize;
 
-    let mut out = HashMap::new();
-    for t in tasks {
-        if let Ok(Some((pair, ob))) = t.await {
-            out.insert(pair, ob);
+        for pair in &pairs {
+            let Some(pair_id) = books.pair_id(pair) else {
+                missing += 1;
+                continue;
+            };
+
+            let last = books.last_update_ms_by_id(pair_id);
+            if last == 0 || now_ms.saturating_sub(last) > max_age_ms {
+                missing += 1;
+                continue;
+            }
+
+            if let Some(ob) = books.get_by_id(pair_id) {
+                out.insert(pair.clone(), ob);
+            } else {
+                missing += 1;
+            }
         }
-    }
-    Ok(out)
-}
 
-fn parse_level(lv: &[String; 2]) -> Option<(f64, f64)> {
-    let p = lv[0].parse::<f64>().ok()?;
-    let a = lv[1].parse::<f64>().ok()?;
-    if p.is_finite() && a.is_finite() && p > 0.0 && a > 0.0 {
-        Some((p, a))
-    } else {
-        None
+        if missing == 0 || start.elapsed() >= max_wait {
+            return out;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
 

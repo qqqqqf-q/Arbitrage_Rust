@@ -61,6 +61,10 @@ pub struct Config {
     pub min_depth_required_usd: Decimal,
     pub order_book_depth: usize,
 
+    pub ticker_warmup_ratio: f64,
+    pub ticker_warmup_timeout_seconds: u64,
+    pub ticker_warmup_min_valid: usize,
+
     pub websocket_chunk_size: usize,
     pub balance_update_interval_seconds: u64,
     pub ticker_batch_size: usize,
@@ -94,6 +98,10 @@ impl Default for Config {
             max_bid_ask_spread_percent_per_step: dec!(0.50),
             min_depth_required_usd: dec!(100.0),
             order_book_depth: 10,
+
+            ticker_warmup_ratio: 0.8,
+            ticker_warmup_timeout_seconds: 20,
+            ticker_warmup_min_valid: 0,
 
             websocket_chunk_size: 180,
             balance_update_interval_seconds: 60,
@@ -132,6 +140,34 @@ impl Config {
                 if d > 0 {
                     cfg.max_arbitrage_depth = d;
                 }
+            }
+        }
+
+        if let Ok(v) = env::var("WEBSOCKET_CHUNK_SIZE") {
+            if let Ok(n) = v.trim().parse::<usize>() {
+                if n > 0 {
+                    cfg.websocket_chunk_size = n;
+                }
+            }
+        }
+
+        if let Ok(v) = env::var("TICKER_WARMUP_RATIO") {
+            if let Ok(r) = v.trim().parse::<f64>() {
+                if r.is_finite() && r > 0.0 && r <= 1.0 {
+                    cfg.ticker_warmup_ratio = r;
+                }
+            }
+        }
+
+        if let Ok(v) = env::var("TICKER_WARMUP_TIMEOUT_SEC") {
+            if let Ok(n) = v.trim().parse::<u64>() {
+                cfg.ticker_warmup_timeout_seconds = n;
+            }
+        }
+
+        if let Ok(v) = env::var("TICKER_WARMUP_MIN_VALID") {
+            if let Ok(n) = v.trim().parse::<usize>() {
+                cfg.ticker_warmup_min_valid = n;
             }
         }
 

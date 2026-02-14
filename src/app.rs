@@ -117,6 +117,7 @@ pub struct AppContext {
     pub markets: Arc<HashMap<String, Market>>,
     pub websocket_symbols: Arc<Vec<String>>, // 形如 "BTC/USDT"
     pub ws_conn_ok: Arc<Vec<std::sync::atomic::AtomicBool>>,
+    pub ws_chunk_pair_counts: Arc<Vec<usize>>,
     pub trade_ws: BinanceTradeWsClient,
     pub bot: Bot,
     pub user_chat_id: Arc<Mutex<Option<ChatId>>>,
@@ -164,7 +165,7 @@ pub async fn run() -> anyhow::Result<()> {
     let ws_chunk_size = cfg.read().await.websocket_chunk_size;
     let ticker_notify = Arc::new(tokio::sync::Notify::new());
     let ticker_notify_armed = Arc::new(AtomicBool::new(false));
-    let (ws_tasks, ws_conn_ok) = spawn_book_ticker_streams(
+    let (ws_tasks, ws_conn_ok, ws_chunk_pair_counts) = spawn_book_ticker_streams(
         websocket_symbols.clone(),
         markets.clone(),
         tickers.clone(),
@@ -197,6 +198,7 @@ pub async fn run() -> anyhow::Result<()> {
         markets: Arc::new(markets),
         websocket_symbols: Arc::new(websocket_symbols),
         ws_conn_ok,
+        ws_chunk_pair_counts,
         trade_ws: trade_ws.clone(),
         bot: bot.clone(),
         user_chat_id: user_chat_id.clone(),
@@ -278,14 +280,73 @@ fn spawn_arbitrage_loop(
 
 async fn main_arbitrage_loop(_rest: &BinanceRestClient, ctx: &AppContext) -> anyhow::Result<()> {
     info!("主循环预热中，等待 WebSocket Ticker 数据稳定...");
-    let required = ((ctx.websocket_symbols.len() as f64) * 0.8) as usize;
-    while ctx.tickers.valid_count() < required {
+
+    let (warmup_ratio, warmup_timeout_sec, warmup_min_valid) = {
+        let cfg = ctx.cfg.read().await;
+        (
+            cfg.ticker_warmup_ratio,
+            cfg.ticker_warmup_timeout_seconds,
+            cfg.ticker_warmup_min_valid,
+        )
+    };
+
+    let warmup_start = Instant::now();
+    loop {
+        let connected_pairs: usize = ctx
+            .ws_chunk_pair_counts
+            .iter()
+            .zip(ctx.ws_conn_ok.iter())
+            .filter(|(_, ok)| ok.load(Ordering::Relaxed))
+            .map(|(n, _)| *n)
+            .sum();
+
+        let connected_chunks = ctx
+            .ws_conn_ok
+            .iter()
+            .filter(|b| b.load(Ordering::Relaxed))
+            .count();
+
+        let total_pairs = ctx.tickers.pair_count();
+        let total_chunks = ctx.ws_conn_ok.len();
+
+        let mut required = ((connected_pairs as f64) * warmup_ratio).ceil() as usize;
+        let warmup_min_valid = warmup_min_valid.min(connected_pairs);
+        required = required.max(warmup_min_valid);
+        required = required.min(connected_pairs);
+
+        let valid = ctx.tickers.valid_count();
+        if connected_pairs > 0 && valid >= required {
+            break;
+        }
+
+        if warmup_timeout_sec > 0 && warmup_start.elapsed() >= Duration::from_secs(warmup_timeout_sec)
+        {
+            let min_after_timeout = std::cmp::min(20, connected_pairs);
+            if valid >= min_after_timeout && connected_pairs > 0 {
+                warn!(
+                    "Ticker 预热超时（{}s）：当前有效 {}/{}（已连接 {}/{}，WS 块 {}/{}），继续运行。",
+                    warmup_timeout_sec,
+                    valid,
+                    required,
+                    connected_pairs,
+                    total_pairs,
+                    connected_chunks,
+                    total_chunks
+                );
+                break;
+            }
+        }
+
         info!(
-            "  ...等待 Ticker 数据 ({}/{})",
-            ctx.tickers.valid_count(),
-            required
+            "  ...等待 Ticker 数据 ({}/{})（已连接 {}/{}，WS 块 {}/{}）",
+            valid,
+            required,
+            connected_pairs,
+            total_pairs,
+            connected_chunks,
+            total_chunks
         );
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     info!("Ticker 数据已稳定，主套利计算循环正式开始。");
 

@@ -10,6 +10,10 @@
 - `AUTHORIZED_USER_ID`（可选；为 `0` 表示不限制）
 - `BASE_ASSETS`（可选；起始/结算基币列表，逗号分隔，例如 `USDT` / `USDC` / `USDT,USDC`）
 - `MAX_ARBITRAGE_DEPTH`（可选；最大跳数/深度，默认 `6`）
+- `WEBSOCKET_CHUNK_SIZE`（可选；单条 WebSocket 连接的订阅数量；遇到 502 可适当调小，例如 `80`）
+- `TICKER_WARMUP_RATIO`（可选；Ticker 预热比例，取值 (0,1]，默认 `0.8`）
+- `TICKER_WARMUP_TIMEOUT_SEC`（可选；Ticker 预热超时秒数，默认 `20`；设为 `0` 表示不超时）
+- `TICKER_WARMUP_MIN_VALID`（可选；Ticker 预热最小有效数量下限，默认 `0`）
 - `MAKER_ONLY`（可选；默认 `false`。本项目当前使用 MARKET（市价/吃单）执行真实交易；如你想禁止自动交易走市价，可设置 `MAKER_ONLY=true` 并自行接入限价单逻辑）
 - 说明：行情使用 Binance 行情 WebSocket；订单簿风控使用 Depth WebSocket（`@depth10@100ms` 等）；下单使用 Binance 交易 WebSocket API（`wss://ws-api.binance.com/ws-api/v3`）。余额/交易所信息等仍会走 REST。
 

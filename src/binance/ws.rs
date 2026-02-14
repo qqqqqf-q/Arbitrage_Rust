@@ -108,7 +108,11 @@ pub fn spawn_book_ticker_streams(
     ticker_notify_armed: Arc<AtomicBool>,
     perf: Arc<PerfCounters>,
     chunk_size: usize,
-) -> (Vec<tokio::task::JoinHandle<()>>, Arc<Vec<AtomicBool>>) {
+) -> (
+    Vec<tokio::task::JoinHandle<()>>,
+    Arc<Vec<AtomicBool>>,
+    Arc<Vec<usize>>,
+) {
     let mut chunks: Vec<Vec<String>> = Vec::new();
     for c in websocket_symbols.chunks(chunk_size) {
         chunks.push(c.to_vec());
@@ -128,10 +132,23 @@ pub fn spawn_book_ticker_streams(
     }
     let binance_to_id = Arc::new(binance_to_id);
 
-    let tasks = chunks
+    let stream_chunks: Vec<Vec<String>> = chunks
+        .into_iter()
+        .map(|pairs| {
+            pairs
+                .into_iter()
+                .filter_map(|p| pair_to_stream.get(&p).cloned())
+                .collect()
+        })
+        .collect();
+
+    let chunk_pair_counts: Arc<Vec<usize>> =
+        Arc::new(stream_chunks.iter().map(|s| s.len()).collect());
+
+    let tasks = stream_chunks
         .into_iter()
         .enumerate()
-        .map(|(idx, pairs)| {
+        .map(|(idx, streams)| {
             let store = store.clone();
             let graph = graph.clone();
             let ticker_notify = ticker_notify.clone();
@@ -140,10 +157,6 @@ pub fn spawn_book_ticker_streams(
             let conn_ok = conn_ok.clone();
             let binance_to_id = binance_to_id.clone();
 
-            let streams: Vec<String> = pairs
-                .into_iter()
-                .filter_map(|p| pair_to_stream.get(&p).cloned())
-                .collect();
             tokio::spawn(async move {
                 run_ws_chunk(
                     idx,
@@ -161,7 +174,7 @@ pub fn spawn_book_ticker_streams(
         })
         .collect();
 
-    (tasks, conn_ok)
+    (tasks, conn_ok, chunk_pair_counts)
 }
 
 async fn run_ws_chunk(

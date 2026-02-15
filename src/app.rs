@@ -319,7 +319,8 @@ async fn main_arbitrage_loop(_rest: &BinanceRestClient, ctx: &AppContext) -> any
             break;
         }
 
-        if warmup_timeout_sec > 0 && warmup_start.elapsed() >= Duration::from_secs(warmup_timeout_sec)
+        if warmup_timeout_sec > 0
+            && warmup_start.elapsed() >= Duration::from_secs(warmup_timeout_sec)
         {
             let min_after_timeout = std::cmp::min(20, connected_pairs);
             if valid >= min_after_timeout && connected_pairs > 0 {
@@ -339,12 +340,7 @@ async fn main_arbitrage_loop(_rest: &BinanceRestClient, ctx: &AppContext) -> any
 
         info!(
             "  ...等待 Ticker 数据 ({}/{})（已连接 {}/{}，WS 块 {}/{}）",
-            valid,
-            required,
-            connected_pairs,
-            total_pairs,
-            connected_chunks,
-            total_chunks
+            valid, required, connected_pairs, total_pairs, connected_chunks, total_chunks
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -374,7 +370,8 @@ async fn main_arbitrage_loop(_rest: &BinanceRestClient, ctx: &AppContext) -> any
             if seq2 != 0 && seq2 != last_processed_seq {
                 continue;
             }
-            let _ = tokio::time::timeout(Duration::from_millis(250), ctx.ticker_notify.notified()).await;
+            let _ = tokio::time::timeout(Duration::from_millis(250), ctx.ticker_notify.notified())
+                .await;
             continue;
         }
         last_processed_seq = seq;
@@ -462,16 +459,15 @@ async fn main_arbitrage_loop(_rest: &BinanceRestClient, ctx: &AppContext) -> any
                         .await;
 
                         let ctx_clone = Arc::new(ctx_clone_shallow(ctx));
-                            let cycle_clone = cycle.clone();
-                            let base_asset = base_asset.clone();
-                            tokio::spawn(async move {
-                                let _permit = permit;
-                                if let Err(e) =
-                                    execute_arbitrage_path(&ctx_clone, &cycle_clone, &base_asset)
-                                        .await
-                                {
-                                    notify_text(&*ctx_clone, format!("套利执行失败: {}", e)).await;
-                                }
+                        let cycle_clone = cycle.clone();
+                        let base_asset = base_asset.clone();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            if let Err(e) =
+                                execute_arbitrage_path(&ctx_clone, &cycle_clone, &base_asset).await
+                            {
+                                notify_text(&*ctx_clone, format!("套利执行失败: {}", e)).await;
+                            }
                         });
                         break;
                     } else {
@@ -595,9 +591,14 @@ async fn execute_arbitrage_path(
         .unwrap_or_else(|| "USDT".to_string());
 
     if current_currency != cycle_start {
-        let res =
-            execute_real_swap(&ctx.trade_ws, ctx, &current_currency, &cycle_start, current_amount)
-                .await?;
+        let res = execute_real_swap(
+            &ctx.trade_ws,
+            ctx,
+            &current_currency,
+            &cycle_start,
+            current_amount,
+        )
+        .await?;
         current_amount = res.received_amount;
         current_currency = res.received_currency;
     }
@@ -626,7 +627,7 @@ async fn execute_arbitrage_path(
                 Some(current_amount),
                 &cfg,
             )
-                .await?
+            .await?
         } else if trade.kind == "BUY" {
             let qty = match expected_price {
                 Some(p) if p > 0.0 => {
@@ -645,7 +646,7 @@ async fn execute_arbitrage_path(
                 None,
                 &cfg,
             )
-                .await?
+            .await?
         };
 
         current_amount = order.received_amount;
@@ -809,11 +810,7 @@ async fn place_market_order_with_retry(
                 };
                 info!(
                     "下单成功: symbol={} side={} order_id={} status={} latency_ms={:.2}",
-                    market.binance_symbol,
-                    side,
-                    order.order_id,
-                    order.status,
-                    latency_ms
+                    market.binance_symbol, side, order.order_id, order.status, latency_ms
                 );
                 return Ok(res);
             }

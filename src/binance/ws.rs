@@ -214,7 +214,7 @@ async fn run_ws_chunk(
                 while let Some(msg) = reader.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
-                            if let Err(e) = handle_ws_message(
+                            if let Err(e) = handle_book_ticker_ws_message(
                                 text.into_bytes(),
                                 &store,
                                 &graph,
@@ -227,7 +227,7 @@ async fn run_ws_chunk(
                             }
                         }
                         Ok(Message::Binary(bin)) => {
-                            if let Err(e) = handle_ws_message(
+                            if let Err(e) = handle_book_ticker_ws_message(
                                 bin,
                                 &store,
                                 &graph,
@@ -260,7 +260,7 @@ async fn run_ws_chunk(
     }
 }
 
-fn handle_ws_message(
+pub(crate) fn handle_book_ticker_ws_message(
     mut bytes: Vec<u8>,
     store: &TickerStore,
     graph: &Graph,
@@ -393,11 +393,9 @@ async fn run_depth_ws_chunk(
                 while let Some(msg) = reader.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
-                            if let Err(e) = handle_depth_ws_message(
-                                text.into_bytes(),
-                                &books,
-                                &stream_to_id,
-                            ) {
+                            if let Err(e) =
+                                handle_depth_ws_message(text.into_bytes(), &books, &stream_to_id)
+                            {
                                 warn!("Depth 块 {}: 解析消息失败: {}", chunk_index + 1, e);
                             }
                         }

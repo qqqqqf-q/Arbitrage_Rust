@@ -32,3 +32,13 @@ cargo build --release
 1. 成本门槛高：你还需要购买一台 AWS Japan 的机器。  
 2. 竞争压力大：你的对手是使用了 FPGA 直接进行机器编程的大商（大厂）。   
 所以这个项目基本上只作为技术展示使用，并不建议任何人直接使用。三角套利也并非真的无风险套利，大部分时间，你只会看到你的钱包慢慢亏损
+
+### 如果你想优化代码,这里有一个性能测试的入口
+```bash
+export PERF_TEST_REPEAT=5
+cargo run --release -- perf-test record
+cargo run --release -- perf-test replay        # 默认 benchmark：带 SPFA + 模拟
+cargo run --release -- perf-test loop          # 计时 benchmark：30 秒能跑多少轮（更新 + SPFA + 模拟）
+cargo run --release -- perf-test micro replay  # 微基准：只测 WS 摄入链路（可选）
+```
+这样就可以比较算法优化差异了

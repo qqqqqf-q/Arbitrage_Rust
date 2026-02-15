@@ -4,5 +4,6 @@ pub mod binance;
 pub mod config;
 pub mod domain;
 pub mod perf;
+pub mod perf_test;
 pub mod store;
 pub mod telegram;

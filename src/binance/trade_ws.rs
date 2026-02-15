@@ -237,17 +237,16 @@ fn handle_incoming_text(inner: &Inner, text: &str) {
         return;
     };
 
-    let status = v
-        .get("status")
-        .and_then(|s| s.as_u64())
-        .unwrap_or(0) as u16;
+    let status = v.get("status").and_then(|s| s.as_u64()).unwrap_or(0) as u16;
 
     if status == 200 {
         let res = v
             .get("result")
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("缺少 result"))
-            .and_then(|vv| serde_json::from_value::<OrderResponse>(vv).context("反序列化成交回报失败"));
+            .and_then(|vv| {
+                serde_json::from_value::<OrderResponse>(vv).context("反序列化成交回报失败")
+            });
         let _ = tx.send(res);
         return;
     }
@@ -268,4 +267,3 @@ fn handle_incoming_text(inner: &Inner, text: &str) {
     };
     let _ = tx.send(Err(err));
 }
-

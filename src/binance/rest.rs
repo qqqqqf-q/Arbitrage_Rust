@@ -37,6 +37,19 @@ impl BinanceRestClient {
         })
     }
 
+    pub fn new_public() -> anyhow::Result<Self> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()?;
+
+        Ok(Self {
+            http,
+            base_url: "https://api.binance.com".to_string(),
+            api_key: String::new(),
+            api_secret: String::new(),
+        })
+    }
+
     pub async fn exchange_info(&self) -> anyhow::Result<ExchangeInfo> {
         self.get_json("/api/v3/exchangeInfo", None::<&str>).await
     }

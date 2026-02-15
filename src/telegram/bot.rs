@@ -252,8 +252,16 @@ impl TelegramController {
         let ws_bytes = self.ctx.perf_counters.ws_msg_bytes.load(Ordering::Relaxed);
         let ws_avg_parse_ns = self.ctx.perf_counters.ws_avg_parse_ns();
         let ws_avg_apply_ns = self.ctx.perf_counters.ws_avg_apply_ns();
-        let ws_max_parse_ns = self.ctx.perf_counters.ws_parse_ns_max.load(Ordering::Relaxed);
-        let ws_max_apply_ns = self.ctx.perf_counters.ws_apply_ns_max.load(Ordering::Relaxed);
+        let ws_max_parse_ns = self
+            .ctx
+            .perf_counters
+            .ws_parse_ns_max
+            .load(Ordering::Relaxed);
+        let ws_max_apply_ns = self
+            .ctx
+            .perf_counters
+            .ws_apply_ns_max
+            .load(Ordering::Relaxed);
 
         let cfg = self.ctx.cfg.read().await.clone();
 

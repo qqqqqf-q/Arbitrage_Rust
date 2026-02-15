@@ -38,6 +38,15 @@ impl PerfCounters {
         }
         self.ws_apply_ns_sum.load(Ordering::Relaxed) / c
     }
+
+    pub fn reset_ws(&self) {
+        self.ws_msg_count.store(0, Ordering::Relaxed);
+        self.ws_msg_bytes.store(0, Ordering::Relaxed);
+        self.ws_parse_ns_sum.store(0, Ordering::Relaxed);
+        self.ws_parse_ns_max.store(0, Ordering::Relaxed);
+        self.ws_apply_ns_sum.store(0, Ordering::Relaxed);
+        self.ws_apply_ns_max.store(0, Ordering::Relaxed);
+    }
 }
 
 fn update_max(cell: &AtomicU64, v: u64) {
@@ -49,4 +58,3 @@ fn update_max(cell: &AtomicU64, v: u64) {
         }
     }
 }
-
